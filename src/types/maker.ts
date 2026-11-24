@@ -2872,12 +2872,18 @@ export interface CharacterMakerDoc {
 
   eyebrowEnabled: boolean;
   eyebrowExpression: CharacterEyebrowExpression;
+  eyebrowSpacing?: number;
   eyebrowHeight: number;
   eyebrowTiltDeg: number;
   eyebrowArch: number;
   eyebrowThickness: number;
   eyebrowWidth: number;
   eyebrowColor: string;
+
+  /** Optional per-side (Left / Right / Both) facial overrides */
+  eyeSideConfig?: CharacterEyeSculptConfig;
+  eyebrowSideConfig?: CharacterEyebrowSculptConfig;
+  mouthSideConfig?: CharacterMouthSculptConfig;
 
   mouthStyle: CharacterMouthStyle;
   mouthSize: number;
@@ -2895,5 +2901,64 @@ export interface CharacterMakerDoc {
   buckTeethTopWidth?: number;
   buckTeethBottomWidth?: number;
   vertexPaintStrokes?: VertexPaintStroke[];
+}
+
+export interface CharacterEyeSideConfig {
+  enabled: boolean;
+  flatness: number;
+  size: number;
+  aspectX: number;
+  aspectY: number;
+  spacing: number;
+  height: number;
+  pupilStyle: CharacterEyePupilStyle;
+  pupilSize: number;
+  irisColor: string;
+  scleraColor: string;
+  eyelidEnabled: boolean;
+  eyelidRestHeight: number;
+  eyelidLowerEnabled: boolean;
+  eyelidColor: string;
+}
+
+export interface CharacterEyeSculptConfig {
+  mirrorSides: boolean;
+  left: CharacterEyeSideConfig;
+  right: CharacterEyeSideConfig;
+}
+
+export interface CharacterEyebrowSideConfig {
+  enabled: boolean;
+  expression: CharacterEyebrowExpression;
+  spacing: number;
+  height: number;
+  tiltDeg: number;
+  arch: number;
+  thickness: number;
+  width: number;
+  color: string;
+}
+
+export interface CharacterEyebrowSculptConfig {
+  mirrorSides: boolean;
+  left: CharacterEyebrowSideConfig;
+  right: CharacterEyebrowSideConfig;
+}
+
+export interface CharacterMouthSideConfig {
+  enabled: boolean;
+  size: number;
+  widthScale: number;
+  openAmount: number;
+  offsetY: number;
+  offsetZ: number;
+  tiltDeg: number;
+  color: string;
+}
+
+export interface CharacterMouthSculptConfig {
+  mirrorSides: boolean;
+  left: CharacterMouthSideConfig;
+  right: CharacterMouthSideConfig;
 }
 

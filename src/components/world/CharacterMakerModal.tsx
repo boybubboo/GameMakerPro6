@@ -81,7 +81,11 @@ import type {
   CharacterBodyPartKey,
   CharacterEarStyle,
   CharacterEyebrowExpression,
+  CharacterEyebrowSculptConfig,
+  CharacterEyebrowSideConfig,
   CharacterEyePupilStyle,
+  CharacterEyeSculptConfig,
+  CharacterEyeSideConfig,
   CharacterEyewearStyle,
   CharacterFootStyle,
   CharacterHairDetailStyle,
@@ -96,6 +100,8 @@ import type {
   CharacterLimbProfile,
   CharacterMakerDoc,
   CharacterMaterialFinish,
+  CharacterMouthSculptConfig,
+  CharacterMouthSideConfig,
   CharacterMouthStyle,
   CharacterMuzzleConfig,
   CharacterMuzzlePresetId,
@@ -548,6 +554,9 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('body');
   const customHairPresets = useCustomHairPresets();
   const [hairEditSide, setHairEditSide] = useState<'both' | 'left' | 'right'>('both');
+  const [eyeEditSide, setEyeEditSide] = useState<'both' | 'left' | 'right'>('both');
+  const [eyebrowEditSide, setEyebrowEditSide] = useState<'both' | 'left' | 'right'>('both');
+  const [mouthEditSide, setMouthEditSide] = useState<'both' | 'left' | 'right'>('both');
   const [saveHairOpen, setSaveHairOpen] = useState(false);
   const [customHairName, setCustomHairName] = useState('');
   const [animMode, setAnimMode] = useState<PreviewAnimMode>('idle');
@@ -612,6 +621,10 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       setUndoStack([]);
       setRedoStack([]);
       setShowLoadMenu(false);
+      setHairEditSide('both');
+      setEyeEditSide('both');
+      setEyebrowEditSide('both');
+      setMouthEditSide('both');
       if (asset.characterRecipe) {
         const cloned = JSON.parse(JSON.stringify(asset.characterRecipe)) as CharacterMakerDoc;
         setDoc(cloned);
@@ -680,6 +693,10 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
     const info = CHARACTER_PRESETS.find((p) => p.id === presetId);
     const next = createCharacterPresetDoc(presetId);
     const wasCustomized = hasSavedCharacterSpeciesDefault(presetId);
+    setHairEditSide('both');
+    setEyeEditSide('both');
+    setEyebrowEditSide('both');
+    setMouthEditSide('both');
     updateDoc(() => next, true);
     setPaintStrokes(
       Array.isArray(next.vertexPaintStrokes)
@@ -4085,7 +4102,284 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                 );
               })()}
 
-              {inspectorTab === 'eyes' && (
+              {inspectorTab === 'eyes' && (() => {
+                const eyeCfg = ext.eyeSideConfig;
+                const activeEyeSide = eyeEditSide === 'right' ? eyeCfg.right : eyeCfg.left;
+                const browCfg = ext.eyebrowSideConfig;
+                const activeBrowSide = eyebrowEditSide === 'right' ? browCfg.right : browCfg.left;
+                const mouthCfg = ext.mouthSideConfig;
+                const activeMouthSide = mouthEditSide === 'right' ? mouthCfg.right : mouthCfg.left;
+
+                const syncEyeFlatFields = (s: CharacterEyeSideConfig) => ({
+                  eyeFlatness: s.flatness,
+                  eyeSize: s.size,
+                  eyeAspectX: s.aspectX,
+                  eyeAspectY: s.aspectY,
+                  eyeSpacing: s.spacing,
+                  eyeHeight: s.height,
+                  pupilStyle: s.pupilStyle,
+                  pupilSize: s.pupilSize,
+                  irisColor: s.irisColor,
+                  scleraColor: s.scleraColor,
+                  eyelidEnabled: s.eyelidEnabled,
+                  eyelidRestHeight: s.eyelidRestHeight,
+                  eyelidLowerEnabled: s.eyelidLowerEnabled,
+                  eyelidColor: s.eyelidColor,
+                });
+
+                const patchEyeConfig = (patch: Partial<CharacterEyeSculptConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).eyeSideConfig;
+                      const next: CharacterEyeSculptConfig = { ...prev, ...patch };
+                      if (patch.mirrorSides === true) {
+                        const source = eyeEditSide === 'right' ? prev.right : prev.left;
+                        next.left = { ...source };
+                        next.right = { ...source };
+                        return { ...d, ...syncEyeFlatFields(source), eyeSideConfig: next };
+                      }
+                      return { ...d, eyeSideConfig: next };
+                    },
+                    record
+                  );
+
+                const patchEyeSide = (patch: Partial<CharacterEyeSideConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).eyeSideConfig;
+                      if (eyeEditSide === 'both') {
+                        const nextSide = { ...prev.left, ...patch };
+                        return {
+                          ...d,
+                          ...syncEyeFlatFields(nextSide),
+                          eyeSideConfig: {
+                            mirrorSides: true,
+                            left: nextSide,
+                            right: { ...nextSide },
+                          },
+                        };
+                      }
+                      if (eyeEditSide === 'left') {
+                        return {
+                          ...d,
+                          eyeSideConfig: {
+                            ...prev,
+                            mirrorSides: false,
+                            left: { ...prev.left, ...patch },
+                          },
+                        };
+                      }
+                      return {
+                        ...d,
+                        eyeSideConfig: {
+                          ...prev,
+                          mirrorSides: false,
+                          right: { ...prev.right, ...patch },
+                        },
+                      };
+                    },
+                    record
+                  );
+
+                const syncBrowFlatFields = (s: CharacterEyebrowSideConfig) => ({
+                  eyebrowExpression: s.expression,
+                  eyebrowSpacing: s.spacing,
+                  eyebrowHeight: s.height,
+                  eyebrowTiltDeg: s.tiltDeg,
+                  eyebrowArch: s.arch,
+                  eyebrowThickness: s.thickness,
+                  eyebrowWidth: s.width,
+                  eyebrowColor: s.color,
+                });
+
+                const patchBrowConfig = (patch: Partial<CharacterEyebrowSculptConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).eyebrowSideConfig;
+                      const next: CharacterEyebrowSculptConfig = { ...prev, ...patch };
+                      if (patch.mirrorSides === true) {
+                        const source = eyebrowEditSide === 'right' ? prev.right : prev.left;
+                        next.left = { ...source };
+                        next.right = { ...source };
+                        return { ...d, ...syncBrowFlatFields(source), eyebrowSideConfig: next };
+                      }
+                      return { ...d, eyebrowSideConfig: next };
+                    },
+                    record
+                  );
+
+                const patchBrowSide = (patch: Partial<CharacterEyebrowSideConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).eyebrowSideConfig;
+                      if (eyebrowEditSide === 'both') {
+                        const nextSide = { ...prev.left, ...patch };
+                        return {
+                          ...d,
+                          ...syncBrowFlatFields(nextSide),
+                          eyebrowSideConfig: {
+                            mirrorSides: true,
+                            left: nextSide,
+                            right: { ...nextSide },
+                          },
+                        };
+                      }
+                      if (eyebrowEditSide === 'left') {
+                        return {
+                          ...d,
+                          eyebrowSideConfig: {
+                            ...prev,
+                            mirrorSides: false,
+                            left: { ...prev.left, ...patch },
+                          },
+                        };
+                      }
+                      return {
+                        ...d,
+                        eyebrowSideConfig: {
+                          ...prev,
+                          mirrorSides: false,
+                          right: { ...prev.right, ...patch },
+                        },
+                      };
+                    },
+                    record
+                  );
+
+                const syncMouthFlatFields = (s: CharacterMouthSideConfig) => ({
+                  mouthSize: s.size,
+                  mouthWidthScale: s.widthScale,
+                  mouthOpenAmount: s.openAmount,
+                  mouthOffsetY: s.offsetY,
+                  mouthOffsetZ: s.offsetZ,
+                  mouthTiltDeg: s.tiltDeg,
+                  mouthColor: s.color,
+                });
+
+                const patchMouthConfig = (patch: Partial<CharacterMouthSculptConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).mouthSideConfig;
+                      const next: CharacterMouthSculptConfig = { ...prev, ...patch };
+                      if (patch.mirrorSides === true) {
+                        const source = mouthEditSide === 'right' ? prev.right : prev.left;
+                        next.left = { ...source };
+                        next.right = { ...source };
+                        return { ...d, ...syncMouthFlatFields(source), mouthSideConfig: next };
+                      }
+                      return { ...d, mouthSideConfig: next };
+                    },
+                    record
+                  );
+
+                const patchMouthSide = (patch: Partial<CharacterMouthSideConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).mouthSideConfig;
+                      if (mouthEditSide === 'both') {
+                        const nextSide = { ...prev.left, ...patch };
+                        return {
+                          ...d,
+                          ...syncMouthFlatFields(nextSide),
+                          mouthSideConfig: {
+                            mirrorSides: true,
+                            left: nextSide,
+                            right: { ...nextSide },
+                          },
+                        };
+                      }
+                      if (mouthEditSide === 'left') {
+                        return {
+                          ...d,
+                          mouthSideConfig: {
+                            ...prev,
+                            mirrorSides: false,
+                            left: { ...prev.left, ...patch },
+                          },
+                        };
+                      }
+                      return {
+                        ...d,
+                        mouthSideConfig: {
+                          ...prev,
+                          mirrorSides: false,
+                          right: { ...prev.right, ...patch },
+                        },
+                      };
+                    },
+                    record
+                  );
+
+                const renderSideSelector = (opts: {
+                  title: string;
+                  mirrorSides: boolean;
+                  onToggleMirror: (checked: boolean) => void;
+                  editSide: 'both' | 'left' | 'right';
+                  onChangeSide: (side: 'both' | 'left' | 'right') => void;
+                  sideEnabled: boolean;
+                  onToggleEnabled: (enabled: boolean) => void;
+                }) => (
+                  <div className="space-y-2 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                        {opts.title}
+                      </span>
+                      <label className="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={opts.mirrorSides}
+                          onChange={(e) => opts.onToggleMirror(e.target.checked)}
+                          className="accent-[#7C5CFF] rounded"
+                        />
+                        <span>Mirror Sides</span>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/80 dark:bg-[#141722]">
+                      {(
+                        [
+                          { id: 'both', label: 'Both Sides' },
+                          { id: 'left', label: 'Left Side' },
+                          { id: 'right', label: 'Right Side' },
+                        ] as const
+                      ).map((sideOpt) => (
+                        <button
+                          key={sideOpt.id}
+                          type="button"
+                          onClick={() => opts.onChangeSide(sideOpt.id)}
+                          className={`py-1 rounded-lg text-[10px] font-extrabold transition-colors ${
+                            opts.editSide === sideOpt.id
+                              ? 'bg-[#7C5CFF] text-white'
+                              : 'text-slate-500 dark:text-[#8D95AA] hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          {sideOpt.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-600 dark:text-[#A4ACC0]">
+                        {opts.editSide === 'both'
+                          ? 'Both Sides Active'
+                          : opts.editSide === 'left'
+                            ? 'Left Side Active'
+                            : 'Right Side Active'}
+                      </span>
+                      <label className="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={opts.sideEnabled}
+                          onChange={(e) => opts.onToggleEnabled(e.target.checked)}
+                          className="accent-[#7C5CFF] rounded"
+                        />
+                        <span>Visible</span>
+                      </label>
+                    </div>
+                  </div>
+                );
+
+                return (
                 <>
                   {/* Eyes Shape (Disc <-> Full Sphere), Count & Pupils */}
                   <div className="p-3 rounded-2xl bg-slate-100/80 dark:bg-[#1B1F2E] space-y-3">
@@ -4109,54 +4403,73 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                       </div>
                     </div>
 
+                    {renderSideSelector({
+                      title: 'Eye Side Controls',
+                      mirrorSides: eyeCfg.mirrorSides,
+                      onToggleMirror: (checked) => {
+                        if (checked) setEyeEditSide('both');
+                        else if (eyeEditSide === 'both') setEyeEditSide('left');
+                        patchEyeConfig({ mirrorSides: checked }, true);
+                      },
+                      editSide: eyeEditSide,
+                      onChangeSide: (side) => {
+                        setEyeEditSide(side);
+                        if (side === 'both' && !eyeCfg.mirrorSides) {
+                          patchEyeConfig({ mirrorSides: true }, true);
+                        }
+                      },
+                      sideEnabled: activeEyeSide.enabled,
+                      onToggleEnabled: (enabled) => patchEyeSide({ enabled }, true),
+                    })}
+
                     {renderSliderRow(
                       'Eye Shape (Flat Disc ↔ Full Sphere)',
-                      doc.eyeFlatness,
+                      activeEyeSide.flatness,
                       0.14,
                       1.0,
                       0.02,
-                      (val) => updateDoc((d) => ({ ...d, eyeFlatness: val }))
+                      (val) => patchEyeSide({ flatness: val })
                     )}
                     {renderSliderRow(
                       'Eye Size',
-                      doc.eyeSize,
+                      activeEyeSide.size,
                       0.024,
                       0.095,
                       0.002,
-                      (val) => updateDoc((d) => ({ ...d, eyeSize: val }))
+                      (val) => patchEyeSide({ size: val })
                     )}
                     {renderSliderRow(
                       'Eye Width Ratio',
-                      doc.eyeAspectX,
+                      activeEyeSide.aspectX,
                       0.65,
                       1.5,
                       0.05,
-                      (val) => updateDoc((d) => ({ ...d, eyeAspectX: val }))
+                      (val) => patchEyeSide({ aspectX: val })
                     )}
                     {renderSliderRow(
                       'Eye Height Ratio',
-                      doc.eyeAspectY,
+                      activeEyeSide.aspectY,
                       0.65,
                       1.5,
                       0.05,
-                      (val) => updateDoc((d) => ({ ...d, eyeAspectY: val }))
+                      (val) => patchEyeSide({ aspectY: val })
                     )}
                     {doc.eyeCount > 1 &&
                       renderSliderRow(
                         'Eye Spacing',
-                        doc.eyeSpacing,
+                        activeEyeSide.spacing,
                         0.04,
                         0.15,
                         0.004,
-                        (val) => updateDoc((d) => ({ ...d, eyeSpacing: val }))
+                        (val) => patchEyeSide({ spacing: val })
                       )}
                     {renderSliderRow(
                       'Vertical Eye Placement',
-                      doc.eyeHeight,
+                      activeEyeSide.height,
                       -0.05,
                       0.11,
                       0.004,
-                      (val) => updateDoc((d) => ({ ...d, eyeHeight: val }))
+                      (val) => patchEyeSide({ height: val })
                     )}
 
                     <div className="grid grid-cols-3 gap-1">
@@ -4164,9 +4477,9 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                         <button
                           key={opt.id}
                           type="button"
-                          onClick={() => updateDoc((d) => ({ ...d, pupilStyle: opt.id }), true)}
+                          onClick={() => patchEyeSide({ pupilStyle: opt.id }, true)}
                           className={`py-1 px-1.5 rounded-xl text-[10px] font-bold border ${
-                            doc.pupilStyle === opt.id
+                            activeEyeSide.pupilStyle === opt.id
                               ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
                               : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.07]'
                           }`}
@@ -4178,17 +4491,17 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
 
                     {renderSliderRow(
                       'Pupil Size',
-                      doc.pupilSize,
+                      activeEyeSide.pupilSize,
                       0.25,
                       0.82,
                       0.02,
-                      (val) => updateDoc((d) => ({ ...d, pupilSize: val }))
+                      (val) => patchEyeSide({ pupilSize: val })
                     )}
-                    {renderColorRow('Iris Color', doc.irisColor, (hex) =>
-                      updateDoc((d) => ({ ...d, irisColor: hex }))
+                    {renderColorRow('Iris Color', activeEyeSide.irisColor, (hex) =>
+                      patchEyeSide({ irisColor: hex })
                     )}
-                    {renderColorRow('Sclera Color', doc.scleraColor, (hex) =>
-                      updateDoc((d) => ({ ...d, scleraColor: hex }))
+                    {renderColorRow('Sclera Color', activeEyeSide.scleraColor, (hex) =>
+                      patchEyeSide({ scleraColor: hex })
                     )}
                   </div>
 
@@ -4198,15 +4511,16 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                       <label className="flex items-center gap-2 text-xs font-extrabold text-[#20B46A]">
                         <input
                           type="checkbox"
-                          checked={doc.eyelidEnabled}
-                          onChange={(e) =>
-                            updateDoc((d) => ({ ...d, eyelidEnabled: e.target.checked }), true)
-                          }
+                          checked={activeEyeSide.eyelidEnabled}
+                          onChange={(e) => patchEyeSide({ eyelidEnabled: e.target.checked }, true)}
                           className="accent-[#20B46A]"
                         />
-                        <span>Eyelids &amp; Full Blink</span>
+                        <span>
+                          Eyelids &amp; Blink
+                          {eyeEditSide !== 'both' ? ` (${eyeEditSide === 'left' ? 'Left' : 'Right'})` : ''}
+                        </span>
                       </label>
-                      {doc.eyelidEnabled && (
+                      {activeEyeSide.eyelidEnabled && (
                         <button
                           type="button"
                           onClick={triggerManualBlink}
@@ -4216,23 +4530,23 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                         </button>
                       )}
                     </div>
-                    {doc.eyelidEnabled && (
+                    {activeEyeSide.eyelidEnabled && (
                       <>
                         {renderSliderRow(
                           'Eyelid Rest Height (Wide ↔ Sleepy ↔ Shut)',
-                          doc.eyelidRestHeight,
+                          activeEyeSide.eyelidRestHeight,
                           0.0,
                           1.0,
                           0.02,
-                          (val) => updateDoc((d) => ({ ...d, eyelidRestHeight: val }))
+                          (val) => patchEyeSide({ eyelidRestHeight: val })
                         )}
                         <div className="flex items-center justify-between text-xs font-bold">
                           <label className="inline-flex items-center gap-1.5">
                             <input
                               type="checkbox"
-                              checked={doc.eyelidLowerEnabled}
+                              checked={activeEyeSide.eyelidLowerEnabled}
                               onChange={(e) =>
-                                updateDoc((d) => ({ ...d, eyelidLowerEnabled: e.target.checked }), true)
+                                patchEyeSide({ eyelidLowerEnabled: e.target.checked }, true)
                               }
                               className="accent-[#20B46A]"
                             />
@@ -4250,14 +4564,14 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                             <span>Auto Blink</span>
                           </label>
                         </div>
-                        {renderColorRow('Eyelid Color', doc.eyelidColor, (hex) =>
-                          updateDoc((d) => ({ ...d, eyelidColor: hex }))
+                        {renderColorRow('Eyelid Color', activeEyeSide.eyelidColor, (hex) =>
+                          patchEyeSide({ eyelidColor: hex })
                         )}
                       </>
                     )}
                   </div>
 
-                  {/* Eyebrows & Mouth */}
+                  {/* Eyebrows */}
                   <div className="p-3 rounded-2xl bg-slate-100/80 dark:bg-[#1B1F2E] space-y-3">
                     <label className="flex items-center justify-between text-xs font-extrabold">
                       <span>Adjustable Eyebrows</span>
@@ -4272,14 +4586,33 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                     </label>
                     {doc.eyebrowEnabled && (
                       <>
+                        {renderSideSelector({
+                          title: 'Eyebrow Side Controls',
+                          mirrorSides: browCfg.mirrorSides,
+                          onToggleMirror: (checked) => {
+                            if (checked) setEyebrowEditSide('both');
+                            else if (eyebrowEditSide === 'both') setEyebrowEditSide('left');
+                            patchBrowConfig({ mirrorSides: checked }, true);
+                          },
+                          editSide: eyebrowEditSide,
+                          onChangeSide: (side) => {
+                            setEyebrowEditSide(side);
+                            if (side === 'both' && !browCfg.mirrorSides) {
+                              patchBrowConfig({ mirrorSides: true }, true);
+                            }
+                          },
+                          sideEnabled: activeBrowSide.enabled,
+                          onToggleEnabled: (enabled) => patchBrowSide({ enabled }, true),
+                        })}
+
                         <div className="flex flex-wrap gap-1">
                           {BROW_EXPR_OPTIONS.map((opt) => (
                             <button
                               key={opt.id}
                               type="button"
-                              onClick={() => updateDoc((d) => ({ ...d, eyebrowExpression: opt.id }), true)}
+                              onClick={() => patchBrowSide({ expression: opt.id }, true)}
                               className={`px-2 py-1 rounded-xl text-[10px] font-bold border ${
-                                doc.eyebrowExpression === opt.id
+                                activeBrowSide.expression === opt.id
                                   ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
                                   : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.07]'
                               }`}
@@ -4288,41 +4621,51 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                             </button>
                           ))}
                         </div>
+                        {doc.eyeCount > 1 &&
+                          renderSliderRow(
+                            'Brow Spacing (Closer ↔ Wider)',
+                            activeBrowSide.spacing,
+                            0.02,
+                            0.17,
+                            0.004,
+                            (val) => patchBrowSide({ spacing: val }),
+                            'm'
+                          )}
                         {renderSliderRow(
                           'Brow Height',
-                          doc.eyebrowHeight,
-                          0.006,
-                          0.06,
+                          activeBrowSide.height,
+                          -0.01,
+                          0.065,
                           0.002,
-                          (val) => updateDoc((d) => ({ ...d, eyebrowHeight: val }))
+                          (val) => patchBrowSide({ height: val })
                         )}
                         {renderSliderRow(
                           'Brow Tilt (Fierce ↔ Worried)',
-                          doc.eyebrowTiltDeg,
+                          activeBrowSide.tiltDeg,
                           -35,
                           35,
                           1,
-                          (val) => updateDoc((d) => ({ ...d, eyebrowTiltDeg: val })),
+                          (val) => patchBrowSide({ tiltDeg: val }),
                           '°'
                         )}
                         {renderSliderRow(
                           'Brow Arch Curve',
-                          doc.eyebrowArch,
+                          activeBrowSide.arch,
                           -0.2,
                           1.2,
                           0.05,
-                          (val) => updateDoc((d) => ({ ...d, eyebrowArch: val }))
+                          (val) => patchBrowSide({ arch: val })
                         )}
                         {renderSliderRow(
                           'Brow Thickness',
-                          doc.eyebrowThickness,
+                          activeBrowSide.thickness,
                           0.006,
                           0.026,
                           0.001,
-                          (val) => updateDoc((d) => ({ ...d, eyebrowThickness: val }))
+                          (val) => patchBrowSide({ thickness: val })
                         )}
-                        {renderColorRow('Eyebrow Color', doc.eyebrowColor, (hex) =>
-                          updateDoc((d) => ({ ...d, eyebrowColor: hex }))
+                        {renderColorRow('Eyebrow Color', activeBrowSide.color, (hex) =>
+                          patchBrowSide({ color: hex })
                         )}
                       </>
                     )}
@@ -4587,58 +4930,77 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                     </div>
                     {doc.mouthStyle !== 'none' && doc.mouthStyle !== 'beak' && (
                       <>
+                        {renderSideSelector({
+                          title: 'Mouth Side Controls',
+                          mirrorSides: mouthCfg.mirrorSides,
+                          onToggleMirror: (checked) => {
+                            if (checked) setMouthEditSide('both');
+                            else if (mouthEditSide === 'both') setMouthEditSide('left');
+                            patchMouthConfig({ mirrorSides: checked }, true);
+                          },
+                          editSide: mouthEditSide,
+                          onChangeSide: (side) => {
+                            setMouthEditSide(side);
+                            if (side === 'both' && !mouthCfg.mirrorSides) {
+                              patchMouthConfig({ mirrorSides: true }, true);
+                            }
+                          },
+                          sideEnabled: activeMouthSide.enabled,
+                          onToggleEnabled: (enabled) => patchMouthSide({ enabled }, true),
+                        })}
+
                         {renderSliderRow(
                           'Mouth Size',
-                          doc.mouthSize,
+                          activeMouthSide.size,
                           0.5,
                           1.75,
                           0.05,
-                          (val) => updateDoc((d) => ({ ...d, mouthSize: val })),
+                          (val) => patchMouthSide({ size: val }),
                           '×'
                         )}
                         {renderSliderRow(
                           'Mouth Width Scale',
-                          ext.mouthWidthScale,
+                          activeMouthSide.widthScale,
                           0.5,
                           1.8,
                           0.05,
-                          (val) => updateDoc((d) => ({ ...d, mouthWidthScale: val })),
+                          (val) => patchMouthSide({ widthScale: val }),
                           '×'
                         )}
                         {isOpenMouthStyle(doc.mouthStyle) &&
                           renderSliderRow(
                             'Mouth Openness',
-                            ext.mouthOpenAmount,
+                            activeMouthSide.openAmount,
                             0.3,
                             1.4,
                             0.04,
-                            (val) => updateDoc((d) => ({ ...d, mouthOpenAmount: val }))
+                            (val) => patchMouthSide({ openAmount: val })
                           )}
                         {renderSliderRow(
                           'Placement Up / Down',
-                          ext.mouthOffsetY,
+                          activeMouthSide.offsetY,
                           -0.08,
                           0.08,
                           0.002,
-                          (val) => updateDoc((d) => ({ ...d, mouthOffsetY: val })),
+                          (val) => patchMouthSide({ offsetY: val }),
                           'm'
                         )}
                         {renderSliderRow(
                           'Depth to Surface (Flush In ↔ Out)',
-                          ext.mouthOffsetZ,
+                          activeMouthSide.offsetZ,
                           -0.028,
                           0.028,
                           0.001,
-                          (val) => updateDoc((d) => ({ ...d, mouthOffsetZ: val })),
+                          (val) => patchMouthSide({ offsetZ: val }),
                           'm'
                         )}
                         {renderSliderRow(
-                          'Mouth Pitch Tilt',
-                          ext.mouthTiltDeg,
+                          mouthEditSide === 'both' ? 'Mouth Pitch Tilt' : 'Side Corner Tilt',
+                          activeMouthSide.tiltDeg,
                           -45,
                           45,
                           1,
-                          (val) => updateDoc((d) => ({ ...d, mouthTiltDeg: val })),
+                          (val) => patchMouthSide({ tiltDeg: val }),
                           '°'
                         )}
 
@@ -4722,15 +5084,16 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                             )}
                           </div>
                         ) : (
-                          renderColorRow('Mouth Line Color', doc.mouthColor, (hex) =>
-                            updateDoc((d) => ({ ...d, mouthColor: hex }))
+                          renderColorRow('Mouth Line Color', activeMouthSide.color, (hex) =>
+                            patchMouthSide({ color: hex })
                           )
                         )}
                       </>
                     )}
                   </div>
                 </>
-              )}
+                );
+              })()}
 
               {inspectorTab === 'paint' && (
                 <VertexPaintInspector

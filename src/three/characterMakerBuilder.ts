@@ -5,6 +5,10 @@ import type {
   CharacterBeakStyle,
   CharacterBodyPartKey,
   CharacterEyebrowExpression,
+  CharacterEyebrowSculptConfig,
+  CharacterEyebrowSideConfig,
+  CharacterEyeSculptConfig,
+  CharacterEyeSideConfig,
   CharacterHairDetailStyle,
   CharacterHairLayoutMode,
   CharacterHairSculptConfig,
@@ -14,6 +18,8 @@ import type {
   CharacterLimbProfile,
   CharacterMakerDoc,
   CharacterMaterialFinish,
+  CharacterMouthSculptConfig,
+  CharacterMouthSideConfig,
   CharacterMouthStyle,
   CharacterMuzzleConfig,
   CharacterMuzzlePresetId,
@@ -381,6 +387,9 @@ export interface ResolvedCharacterExtras {
   addons: CharacterAddonConfig;
   headCrown: CharacterHeadSegmentProfile;
   headJaw: CharacterHeadSegmentProfile;
+  eyeSideConfig: CharacterEyeSculptConfig;
+  eyebrowSideConfig: CharacterEyebrowSculptConfig;
+  mouthSideConfig: CharacterMouthSculptConfig;
 }
 
 export function createDefaultHairSideConfig(
@@ -982,6 +991,71 @@ export function resolveCharacterExtras(doc: CharacterMakerDoc): ResolvedCharacte
     addons: { ...createDefaultAddonConfig(), ...(doc.addons ?? {}) },
     headCrown: { ...createDefaultHeadCrown(doc.head), ...(doc.headCrown ?? {}) },
     headJaw: { ...createDefaultHeadJaw(doc.head), ...(doc.headJaw ?? {}) },
+    eyeSideConfig: (() => {
+      const baseSide: CharacterEyeSideConfig = {
+        enabled: true,
+        flatness: doc.eyeFlatness,
+        size: doc.eyeSize,
+        aspectX: doc.eyeAspectX,
+        aspectY: doc.eyeAspectY,
+        spacing: doc.eyeSpacing,
+        height: doc.eyeHeight,
+        pupilStyle: doc.pupilStyle,
+        pupilSize: doc.pupilSize,
+        irisColor: doc.irisColor,
+        scleraColor: doc.scleraColor,
+        eyelidEnabled: doc.eyelidEnabled,
+        eyelidRestHeight: doc.eyelidRestHeight,
+        eyelidLowerEnabled: doc.eyelidLowerEnabled,
+        eyelidColor: doc.eyelidColor,
+      };
+      const u = doc.eyeSideConfig;
+      if (!u) {
+        return { mirrorSides: true, left: { ...baseSide }, right: { ...baseSide } };
+      }
+      const left = { ...baseSide, ...(u.left ?? {}) };
+      const right = u.mirrorSides ? { ...left } : { ...baseSide, ...(u.right ?? {}) };
+      return { mirrorSides: u.mirrorSides, left, right };
+    })(),
+    eyebrowSideConfig: (() => {
+      const baseSide: CharacterEyebrowSideConfig = {
+        enabled: true,
+        expression: doc.eyebrowExpression,
+        spacing: doc.eyebrowSpacing ?? doc.eyeSpacing,
+        height: doc.eyebrowHeight,
+        tiltDeg: doc.eyebrowTiltDeg,
+        arch: doc.eyebrowArch,
+        thickness: doc.eyebrowThickness,
+        width: doc.eyebrowWidth,
+        color: doc.eyebrowColor,
+      };
+      const u = doc.eyebrowSideConfig;
+      if (!u) {
+        return { mirrorSides: true, left: { ...baseSide }, right: { ...baseSide } };
+      }
+      const left = { ...baseSide, ...(u.left ?? {}) };
+      const right = u.mirrorSides ? { ...left } : { ...baseSide, ...(u.right ?? {}) };
+      return { mirrorSides: u.mirrorSides, left, right };
+    })(),
+    mouthSideConfig: (() => {
+      const baseSide: CharacterMouthSideConfig = {
+        enabled: true,
+        size: doc.mouthSize,
+        widthScale: doc.mouthWidthScale ?? 1.0,
+        openAmount: doc.mouthOpenAmount ?? 0.85,
+        offsetY: doc.mouthOffsetY ?? 0.0,
+        offsetZ: doc.mouthOffsetZ ?? 0.0,
+        tiltDeg: doc.mouthTiltDeg ?? 0.0,
+        color: doc.mouthColor,
+      };
+      const u = doc.mouthSideConfig;
+      if (!u) {
+        return { mirrorSides: true, left: { ...baseSide }, right: { ...baseSide } };
+      }
+      const left = { ...baseSide, ...(u.left ?? {}) };
+      const right = u.mirrorSides ? { ...left } : { ...baseSide, ...(u.right ?? {}) };
+      return { mirrorSides: u.mirrorSides, left, right };
+    })(),
   };
 }
 
@@ -2568,8 +2642,42 @@ function buildOpenMouthGroup(
   const g = new THREE.Group();
   g.name = 'CharOpenMouth';
 
-  const w = 0.048 * ms * ext.mouthWidthScale;
-  const h = 0.042 * ms * ext.mouthOpenAmount;
+  const leftM = ext.mouthSideConfig.left;
+  const rightM = ext.mouthSideConfig.right;
+  const activeCount = (leftM.enabled ? 1 : 0) + (rightM.enabled ? 1 : 0);
+  const avgSize =
+    activeCount === 2
+      ? (leftM.size + rightM.size) * 0.5
+      : leftM.enabled
+        ? leftM.size
+        : rightM.size;
+  const avgWidthScale =
+    activeCount === 2
+      ? (leftM.widthScale + rightM.widthScale) * 0.5
+      : leftM.enabled
+        ? leftM.widthScale
+        : rightM.widthScale;
+  const avgOpenAmount =
+    activeCount === 2
+      ? (leftM.openAmount + rightM.openAmount) * 0.5
+      : leftM.enabled
+        ? leftM.openAmount
+        : rightM.openAmount;
+  const avgOffsetY =
+    activeCount === 2
+      ? (leftM.offsetY + rightM.offsetY) * 0.5
+      : leftM.enabled
+        ? leftM.offsetY
+        : rightM.offsetY;
+  const avgOffsetZ =
+    activeCount === 2
+      ? (leftM.offsetZ + rightM.offsetZ) * 0.5
+      : leftM.enabled
+        ? leftM.offsetZ
+        : rightM.offsetZ;
+  const effMs = Math.max(0.2, avgSize || ms);
+  const w = 0.048 * effMs * avgWidthScale;
+  const h = 0.042 * effMs * avgOpenAmount;
 
   const isSurprised = ext.mouthStyle === 'openSurprised';
   const isWorried = ext.mouthStyle === 'openWorried';
@@ -2584,12 +2692,43 @@ function buildOpenMouthGroup(
   const zRimBack = recessed ? -0.0062 : -0.0026;
   const wrapStrength = hasMuzzle ? 2.75 : 1.35;
 
+  const leftScaleX = (leftM.size * leftM.widthScale) / Math.max(0.05, effMs * avgWidthScale);
+  const rightScaleX = (rightM.size * rightM.widthScale) / Math.max(0.05, effMs * avgWidthScale);
+  const leftScaleY = (leftM.size * leftM.openAmount) / Math.max(0.05, effMs * avgOpenAmount);
+  const rightScaleY = (rightM.size * rightM.openAmount) / Math.max(0.05, effMs * avgOpenAmount);
+  const needsAsymDeform =
+    !leftM.enabled ||
+    !rightM.enabled ||
+    Math.abs(leftScaleX - 1) > 1e-3 ||
+    Math.abs(rightScaleX - 1) > 1e-3 ||
+    Math.abs(leftScaleY - 1) > 1e-3 ||
+    Math.abs(rightScaleY - 1) > 1e-3 ||
+    Math.abs(leftM.offsetY - rightM.offsetY) > 1e-4 ||
+    Math.abs(leftM.offsetZ - rightM.offsetZ) > 1e-4 ||
+    Math.abs(leftM.tiltDeg - rightM.tiltDeg) > 0.1;
+
   const applySnoutWrap = (geo: THREE.BufferGeometry, baseOffsetZ = 0) => {
     const pos = geo.attributes.position as THREE.BufferAttribute;
+    const blendSpan = Math.max(0.014, w * 0.45);
     for (let i = 0; i < pos.count; i++) {
-      const vx = pos.getX(i);
-      const vy = pos.getY(i);
-      const vz = pos.getZ(i);
+      let vx = pos.getX(i);
+      let vy = pos.getY(i);
+      let vz = pos.getZ(i);
+      if (needsAsymDeform) {
+        if (!leftM.enabled && vx > 0) vx = 0;
+        if (!rightM.enabled && vx < 0) vx = 0;
+        const sideBlend = THREE.MathUtils.smoothstep(vx, -blendSpan, blendSpan);
+        const sx = vx >= 0 ? leftScaleX : rightScaleX;
+        const sy = THREE.MathUtils.lerp(rightScaleY, leftScaleY, sideBlend);
+        const dy = THREE.MathUtils.lerp(rightM.offsetY - avgOffsetY, leftM.offsetY - avgOffsetY, sideBlend);
+        const dz = THREE.MathUtils.lerp(rightM.offsetZ - avgOffsetZ, leftM.offsetZ - avgOffsetZ, sideBlend);
+        const asymTilt = THREE.MathUtils.lerp(rightM.tiltDeg - leftM.tiltDeg, leftM.tiltDeg - rightM.tiltDeg, sideBlend) * 0.5;
+        vx *= sx;
+        vy = vy * sy + dy + (vx / Math.max(0.02, w)) * Math.sin(THREE.MathUtils.degToRad(asymTilt)) * 0.014;
+        vz += dz;
+        pos.setX(i, vx);
+        pos.setY(i, vy);
+      }
       const wrap = -Math.min(0.014, vx * vx * wrapStrength + vy * vy * wrapStrength * 0.72);
       pos.setZ(i, vz + baseOffsetZ + wrap);
     }
@@ -6397,25 +6536,61 @@ export function buildCharacterRigAndMesh(
     doc.mouthStyle === 'openSurprised' ||
     doc.mouthStyle === 'openWorried' ||
     doc.mouthStyle === 'openGrin';
+  const leftMPre = ext.mouthSideConfig.left;
+  const rightMPre = ext.mouthSideConfig.right;
+  const activeMouthPreCount = (leftMPre.enabled ? 1 : 0) + (rightMPre.enabled ? 1 : 0);
+  const avgMouthPreOffsetY =
+    activeMouthPreCount === 2
+      ? (leftMPre.offsetY + rightMPre.offsetY) * 0.5
+      : leftMPre.enabled
+        ? leftMPre.offsetY
+        : rightMPre.enabled
+          ? rightMPre.offsetY
+          : ext.mouthOffsetY;
+  const avgMouthPreSize =
+    activeMouthPreCount === 2
+      ? (leftMPre.size + rightMPre.size) * 0.5
+      : leftMPre.enabled
+        ? leftMPre.size
+        : rightMPre.enabled
+          ? rightMPre.size
+          : doc.mouthSize;
+  const avgMouthPreWidth =
+    activeMouthPreCount === 2
+      ? (leftMPre.widthScale + rightMPre.widthScale) * 0.5
+      : leftMPre.enabled
+        ? leftMPre.widthScale
+        : rightMPre.enabled
+          ? rightMPre.widthScale
+          : ext.mouthWidthScale;
+  const avgMouthPreOpen =
+    activeMouthPreCount === 2
+      ? (leftMPre.openAmount + rightMPre.openAmount) * 0.5
+      : leftMPre.enabled
+        ? leftMPre.openAmount
+        : rightMPre.enabled
+          ? rightMPre.openAmount
+          : ext.mouthOpenAmount;
+
   const baseHeadDepthZ = doc.headForwardTilt + doc.head.midRadius * (doc.head.squashZ ?? 1);
   const tipSkinPad = hasMuzzle ? Math.max(0.14, muzzleCfg.segments[4].ry + 0.12) : 0.14;
   const mouthAnchorY =
     (hasMuzzle ? muzzleEndPt.y - muzzleCfg.segments[4].ry * 0.42 : headCenterY - doc.head.midRadius * 0.34) +
-    ext.mouthOffsetY;
+    avgMouthPreOffsetY;
   const mouthAnchorZ =
     hasMuzzle ? muzzleEndPt.z + muzzleCfg.segments[4].ry * 0.55 : baseHeadDepthZ * 0.92;
 
   let cachedMouthSurfHit: { point: THREE.Vector3; normal: THREE.Vector3 } | null = null;
-  if (isOpenMouth && ext.beakStyle === 'none') {
+  if (isOpenMouth && ext.beakStyle === 'none' && activeMouthPreCount > 0) {
     const preMouthEval = new SdfFieldEvaluator(prims, doc.blendSmoothness);
     const mouthDir = new THREE.Vector3(0, -0.08, 1).normalize();
     const preRayOrigin = new THREE.Vector3(0, mouthAnchorY, mouthAnchorZ + tipSkinPad);
     cachedMouthSurfHit = preMouthEval.projectPointToSurface(preRayOrigin, mouthDir, 24);
 
     if (ext.mouthRecessEnabled) {
-      const ms = doc.mouthSize;
-      const mw = 0.048 * ms * ext.mouthWidthScale;
-      const mh = 0.038 * ms * ext.mouthOpenAmount;
+      const ms = avgMouthPreSize;
+      const mw = 0.048 * ms * avgMouthPreWidth;
+      const mh = 0.038 * ms * avgMouthPreOpen;
       const dimplePt = cachedMouthSurfHit.point
         .clone()
         .addScaledVector(cachedMouthSurfHit.normal, -0.004);
@@ -6583,91 +6758,120 @@ export function buildCharacterRigAndMesh(
     }
   };
 
-  // Eyes (1..6)
-  const eyePositions: { x: number; y: number; scale: number }[] = [];
-  const baseEyeY = headCenterY + doc.eyeHeight;
+  // Eyes (1..6) with independent Left / Right / Both sculpting
+  interface EyeSlotSpec {
+    side: 'left' | 'right' | 'center';
+    xMult: number;
+    ySizeOffset: number;
+    scale: number;
+  }
+  const eyeSlots: EyeSlotSpec[] = [];
   if (doc.eyeCount === 1) {
-    eyePositions.push({ x: 0, y: baseEyeY, scale: 1.28 });
+    eyeSlots.push({ side: 'center', xMult: 0, ySizeOffset: 0, scale: 1.28 });
   } else if (doc.eyeCount === 2) {
-    eyePositions.push({ x: doc.eyeSpacing, y: baseEyeY, scale: 1 });
-    eyePositions.push({ x: -doc.eyeSpacing, y: baseEyeY, scale: 1 });
+    eyeSlots.push({ side: 'left', xMult: 1, ySizeOffset: 0, scale: 1 });
+    eyeSlots.push({ side: 'right', xMult: -1, ySizeOffset: 0, scale: 1 });
   } else if (doc.eyeCount === 3) {
-    eyePositions.push({ x: doc.eyeSpacing, y: baseEyeY, scale: 1 });
-    eyePositions.push({ x: -doc.eyeSpacing, y: baseEyeY, scale: 1 });
-    eyePositions.push({ x: 0, y: baseEyeY + doc.eyeSize * 1.45, scale: 0.85 });
+    eyeSlots.push({ side: 'left', xMult: 1, ySizeOffset: 0, scale: 1 });
+    eyeSlots.push({ side: 'right', xMult: -1, ySizeOffset: 0, scale: 1 });
+    eyeSlots.push({ side: 'center', xMult: 0, ySizeOffset: 1.45, scale: 0.85 });
   } else if (doc.eyeCount === 4) {
-    eyePositions.push({ x: doc.eyeSpacing, y: baseEyeY + doc.eyeSize * 0.55, scale: 0.95 });
-    eyePositions.push({ x: -doc.eyeSpacing, y: baseEyeY + doc.eyeSize * 0.55, scale: 0.95 });
-    eyePositions.push({ x: doc.eyeSpacing * 1.28, y: baseEyeY - doc.eyeSize * 0.9, scale: 0.72 });
-    eyePositions.push({ x: -doc.eyeSpacing * 1.28, y: baseEyeY - doc.eyeSize * 0.9, scale: 0.72 });
+    eyeSlots.push({ side: 'left', xMult: 1, ySizeOffset: 0.55, scale: 0.95 });
+    eyeSlots.push({ side: 'right', xMult: -1, ySizeOffset: 0.55, scale: 0.95 });
+    eyeSlots.push({ side: 'left', xMult: 1.28, ySizeOffset: -0.9, scale: 0.72 });
+    eyeSlots.push({ side: 'right', xMult: -1.28, ySizeOffset: -0.9, scale: 0.72 });
   } else {
-    eyePositions.push({ x: doc.eyeSpacing * 0.82, y: baseEyeY + doc.eyeSize * 0.65, scale: 0.88 });
-    eyePositions.push({ x: -doc.eyeSpacing * 0.82, y: baseEyeY + doc.eyeSize * 0.65, scale: 0.88 });
-    eyePositions.push({ x: doc.eyeSpacing * 1.42, y: baseEyeY - doc.eyeSize * 0.15, scale: 0.68 });
-    eyePositions.push({ x: -doc.eyeSpacing * 1.42, y: baseEyeY - doc.eyeSize * 0.15, scale: 0.68 });
-    eyePositions.push({ x: doc.eyeSpacing * 0.72, y: baseEyeY - doc.eyeSize * 0.95, scale: 0.6 });
-    eyePositions.push({ x: -doc.eyeSpacing * 0.72, y: baseEyeY - doc.eyeSize * 0.95, scale: 0.6 });
+    eyeSlots.push({ side: 'left', xMult: 0.82, ySizeOffset: 0.65, scale: 0.88 });
+    eyeSlots.push({ side: 'right', xMult: -0.82, ySizeOffset: 0.65, scale: 0.88 });
+    eyeSlots.push({ side: 'left', xMult: 1.42, ySizeOffset: -0.15, scale: 0.68 });
+    eyeSlots.push({ side: 'right', xMult: -1.42, ySizeOffset: -0.15, scale: 0.68 });
+    eyeSlots.push({ side: 'left', xMult: 0.72, ySizeOffset: -0.95, scale: 0.6 });
+    eyeSlots.push({ side: 'right', xMult: -0.72, ySizeOffset: -0.95, scale: 0.6 });
   }
 
-  const scleraMat = new THREE.MeshStandardMaterial({
-    color: doc.scleraColor,
-    roughness: 0.18,
-    metalness: 0.02,
-  });
-  const irisMat = new THREE.MeshStandardMaterial({
-    color: doc.irisColor,
-    roughness: 0.25,
-    metalness: 0.05,
-    emissive: doc.pupilStyle === 'glow' ? new THREE.Color(doc.irisColor) : new THREE.Color('#000000'),
-    emissiveIntensity: doc.pupilStyle === 'glow' ? 0.55 : 0,
-  });
-  const pupilMat = new THREE.MeshStandardMaterial({
-    color: doc.pupilColor,
-    roughness: 0.12,
-    metalness: 0.02,
-    emissive: doc.pupilStyle === 'glow' ? new THREE.Color(doc.pupilColor) : new THREE.Color('#000000'),
-    emissiveIntensity: doc.pupilStyle === 'glow' ? 0.9 : 0,
-  });
   const catchlightMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
-  const eyelidMat = new THREE.MeshStandardMaterial({
-    color: doc.eyelidColor,
-    roughness: doc.materialFinish === 'glossySlime' ? 0.18 : 0.62,
-    metalness: 0.02,
-    side: THREE.DoubleSide,
+  const createEyeMaterials = (cfg: CharacterEyeSideConfig) => ({
+    scleraMat: new THREE.MeshStandardMaterial({
+      color: cfg.scleraColor,
+      roughness: 0.18,
+      metalness: 0.02,
+    }),
+    irisMat: new THREE.MeshStandardMaterial({
+      color: cfg.irisColor,
+      roughness: 0.25,
+      metalness: 0.05,
+      emissive: cfg.pupilStyle === 'glow' ? new THREE.Color(cfg.irisColor) : new THREE.Color('#000000'),
+      emissiveIntensity: cfg.pupilStyle === 'glow' ? 0.55 : 0,
+    }),
+    pupilMat: new THREE.MeshStandardMaterial({
+      color: doc.pupilColor,
+      roughness: 0.12,
+      metalness: 0.02,
+      emissive: cfg.pupilStyle === 'glow' ? new THREE.Color(doc.pupilColor) : new THREE.Color('#000000'),
+      emissiveIntensity: cfg.pupilStyle === 'glow' ? 0.9 : 0,
+    }),
+    eyelidMat: new THREE.MeshStandardMaterial({
+      color: cfg.eyelidColor,
+      roughness: doc.materialFinish === 'glossySlime' ? 0.18 : 0.62,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+    }),
   });
+  const leftEyeMats = createEyeMaterials(ext.eyeSideConfig.left);
+  const rightEyeMats = ext.eyeSideConfig.mirrorSides
+    ? leftEyeMats
+    : createEyeMaterials(ext.eyeSideConfig.right);
 
-  const eyeDepthEmbedFrac = THREE.MathUtils.lerp(0.22, 0.55, doc.eyeFlatness);
+  eyeSlots.forEach((slot, idx) => {
+    const isRight = slot.side === 'right';
+    const sideCfg =
+      slot.side === 'center'
+        ? ext.eyeSideConfig.left.enabled
+          ? ext.eyeSideConfig.left
+          : ext.eyeSideConfig.right
+        : isRight
+          ? ext.eyeSideConfig.right
+          : ext.eyeSideConfig.left;
+    if (slot.side === 'center') {
+      if (!ext.eyeSideConfig.left.enabled && !ext.eyeSideConfig.right.enabled) return;
+    } else if (!sideCfg.enabled) {
+      return;
+    }
 
-  eyePositions.forEach((ep, idx) => {
+    const mats = isRight ? rightEyeMats : leftEyeMats;
+    const epX = slot.xMult * sideCfg.spacing;
+    const epY = headCenterY + sideCfg.height + slot.ySizeOffset * sideCfg.size;
+    const eyeDepthEmbedFrac = THREE.MathUtils.lerp(0.22, 0.55, sideCfg.flatness);
+
     const eyeSocket = new THREE.Group();
     eyeSocket.name = `CharEye_${idx}`;
 
-    const r = doc.eyeSize * ep.scale;
+    const r = sideCfg.size * slot.scale;
     const scaledEyeFrame = new THREE.Group();
-    scaledEyeFrame.scale.set(r * doc.eyeAspectX, r * doc.eyeAspectY, r * doc.eyeFlatness);
+    scaledEyeFrame.scale.set(r * sideCfg.aspectX, r * sideCfg.aspectY, r * sideCfg.flatness);
     eyeSocket.add(scaledEyeFrame);
 
-    const eyeball = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), scleraMat);
+    const eyeball = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), mats.scleraMat);
     eyeball.name = `CharEyeSclera_${idx}`;
     eyeball.castShadow = true;
     scaledEyeFrame.add(eyeball);
 
-    const irisRadius = THREE.MathUtils.clamp(doc.pupilSize * 1.28, 0.28, 0.92);
+    const irisRadius = THREE.MathUtils.clamp(sideCfg.pupilSize * 1.28, 0.28, 0.92);
     const iris = new THREE.Mesh(
       new THREE.SphereGeometry(irisRadius, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.42),
-      irisMat
+      mats.irisMat
     );
     iris.rotation.x = Math.PI * 0.5;
     iris.position.z = 0.72;
     iris.scale.set(1, 0.42, 1);
     scaledEyeFrame.add(iris);
 
-    const pScale = THREE.MathUtils.clamp(doc.pupilSize * 0.78, 0.18, 0.75);
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(pScale, 16, 12), pupilMat);
+    const pScale = THREE.MathUtils.clamp(sideCfg.pupilSize * 0.78, 0.18, 0.75);
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(pScale, 16, 12), mats.pupilMat);
     pupil.position.z = 0.88;
-    if (doc.pupilStyle === 'catSlit') {
+    if (sideCfg.pupilStyle === 'catSlit') {
       pupil.scale.set(0.32, 1.15, 0.35);
-    } else if (doc.pupilStyle === 'oval') {
+    } else if (sideCfg.pupilStyle === 'oval') {
       pupil.scale.set(0.75, 1.15, 0.35);
     } else {
       pupil.scale.set(1, 1, 0.35);
@@ -6678,17 +6882,17 @@ export function buildCharacterRigAndMesh(
     specMain.position.set(0.28, 0.34, 0.98);
     specMain.scale.set(1, 1, 0.35);
     scaledEyeFrame.add(specMain);
-    if (doc.pupilStyle === 'starry') {
+    if (sideCfg.pupilStyle === 'starry') {
       const specSub = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), catchlightMat);
       specSub.position.set(-0.24, -0.26, 0.99);
       specSub.scale.set(1, 1, 0.35);
       scaledEyeFrame.add(specSub);
     }
 
-    if (doc.eyelidEnabled) {
+    if (sideCfg.eyelidEnabled) {
       const topMinOpen = -Math.PI * 0.52;
       const topMaxClose = Math.PI * 0.5;
-      const restFrac = THREE.MathUtils.clamp(doc.eyelidRestHeight, 0, 1);
+      const restFrac = THREE.MathUtils.clamp(sideCfg.eyelidRestHeight, 0, 1);
 
       const topLidPivot = new THREE.Group();
       topLidPivot.name = `CharEye_${idx}_EyelidTop`;
@@ -6702,7 +6906,7 @@ export function buildCharacterRigAndMesh(
       };
       const topLidShell = new THREE.Mesh(
         new THREE.SphereGeometry(1.07, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
-        eyelidMat
+        mats.eyelidMat
       );
       topLidShell.castShadow = true;
       topLidPivot.add(topLidShell);
@@ -6715,7 +6919,7 @@ export function buildCharacterRigAndMesh(
         restClosedFrac: restFrac,
       });
 
-      if (doc.eyelidLowerEnabled) {
+      if (sideCfg.eyelidLowerEnabled) {
         const botMinOpen = Math.PI * 0.52;
         const botMaxClose = -Math.PI * 0.04;
         const botRestFrac = restFrac * 0.35;
@@ -6731,7 +6935,7 @@ export function buildCharacterRigAndMesh(
         };
         const botLidShell = new THREE.Mesh(
           new THREE.SphereGeometry(1.055, 20, 10, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48),
-          eyelidMat
+          mats.eyelidMat
         );
         botLidPivot.add(botLidShell);
         scaledEyeFrame.add(botLidPivot);
@@ -6746,54 +6950,91 @@ export function buildCharacterRigAndMesh(
     }
 
     const skullOrigin = new THREE.Vector3(
-      ep.x * 0.18,
-      THREE.MathUtils.clamp(ep.y, headBotY + 0.02, headTopY + doc.head.endRadius * 0.55) * 0.4 + headCenterY * 0.6,
+      epX * 0.18,
+      THREE.MathUtils.clamp(epY, headBotY + 0.02, headTopY + doc.head.endRadius * 0.55) * 0.4 + headCenterY * 0.6,
       doc.headForwardTilt - doc.head.midRadius * 0.08
     );
-    const skullTarget = new THREE.Vector3(ep.x, ep.y, baseHeadDepthZ);
+    const skullTarget = new THREE.Vector3(epX, epY, baseHeadDepthZ);
     const rayDir = skullTarget.clone().sub(skullOrigin).normalize();
-    const fallbackOrigin = new THREE.Vector3(ep.x, ep.y, baseHeadDepthZ + 0.035);
-    const bias = r * doc.eyeFlatness * (1 - eyeDepthEmbedFrac * 1.35);
+    const fallbackOrigin = new THREE.Vector3(epX, epY, baseHeadDepthZ + 0.035);
+    const bias = r * sideCfg.flatness * (1 - eyeDepthEmbedFrac * 1.35);
     attachFromSkullInterior(skullOrigin, rayDir, fallbackOrigin, eyeSocket, bias, 0.45);
   });
 
-  // Eyebrows (with smooth rounded sphere end caps!)
+  // Eyebrows (with brow spacing + independent Left / Right / Both controls + rounded end caps)
   if (doc.eyebrowEnabled) {
-    const browMat = new THREE.MeshStandardMaterial({
-      color: doc.eyebrowColor,
-      roughness: 0.65,
-      metalness: 0.02,
-    });
-    const exprTilt = expressionTiltOffset(doc.eyebrowExpression);
-    const browEyes = doc.eyeCount === 1 ? [eyePositions[0]] : eyePositions.slice(0, 2);
-    browEyes.forEach((ep, bIdx) => {
+    const browSlots: { side: 'left' | 'right' | 'center'; xSign: number; yOffsetMult: number }[] =
+      doc.eyeCount === 1
+        ? [{ side: 'center', xSign: 0, yOffsetMult: 0 }]
+        : doc.eyeCount === 4
+          ? [
+              { side: 'left', xSign: 1, yOffsetMult: 0.55 },
+              { side: 'right', xSign: -1, yOffsetMult: 0.55 },
+            ]
+          : doc.eyeCount === 6
+            ? [
+                { side: 'left', xSign: 1, yOffsetMult: 0.65 },
+                { side: 'right', xSign: -1, yOffsetMult: 0.65 },
+              ]
+            : [
+                { side: 'left', xSign: 1, yOffsetMult: 0 },
+                { side: 'right', xSign: -1, yOffsetMult: 0 },
+              ];
+
+    browSlots.forEach((slot, bIdx) => {
+      const browCfg =
+        slot.side === 'right'
+          ? ext.eyebrowSideConfig.right
+          : slot.side === 'left'
+            ? ext.eyebrowSideConfig.left
+            : ext.eyebrowSideConfig.left.enabled
+              ? ext.eyebrowSideConfig.left
+              : ext.eyebrowSideConfig.right;
+      if (slot.side === 'center') {
+        if (!ext.eyebrowSideConfig.left.enabled && !ext.eyebrowSideConfig.right.enabled) return;
+      } else if (!browCfg.enabled) {
+        return;
+      }
+
+      const eyeRef =
+        slot.side === 'right' ? ext.eyeSideConfig.right : ext.eyeSideConfig.left;
+      const eyeRefY = headCenterY + eyeRef.height + slot.yOffsetMult * eyeRef.size;
+      const browX = slot.xSign * browCfg.spacing;
+      const browY = eyeRefY + eyeRef.size * eyeRef.aspectY + browCfg.height;
+
+      const browMat = new THREE.MeshStandardMaterial({
+        color: browCfg.color,
+        roughness: 0.65,
+        metalness: 0.02,
+      });
+      const exprTilt = expressionTiltOffset(browCfg.expression);
       const browGroup = new THREE.Group();
       browGroup.name = `CharEyebrow_${bIdx}`;
       const browMeshGroup = createArchBrowGroup(
-        doc.eyebrowWidth,
-        doc.eyebrowArch * 0.028,
-        doc.eyebrowThickness,
+        browCfg.width,
+        browCfg.arch * 0.028,
+        browCfg.thickness,
         browMat
       );
-      const sideSign = doc.eyeCount === 1 ? 0 : ep.x >= 0 ? -1 : 1;
-      browMeshGroup.rotation.z = THREE.MathUtils.degToRad((doc.eyebrowTiltDeg + exprTilt) * sideSign);
+      const sideSign = slot.side === 'center' ? 0 : slot.xSign >= 0 ? -1 : 1;
+      browMeshGroup.rotation.z = THREE.MathUtils.degToRad((browCfg.tiltDeg + exprTilt) * sideSign);
       browGroup.add(browMeshGroup);
 
-      const browY = ep.y + doc.eyeSize * doc.eyeAspectY + doc.eyebrowHeight;
       const browSkullOrigin = new THREE.Vector3(
-        ep.x * 0.18,
-        THREE.MathUtils.clamp(browY, headBotY + 0.04, headTopY + doc.head.endRadius * 0.72) * 0.45 + headCenterY * 0.55,
+        browX * 0.18,
+        THREE.MathUtils.clamp(browY, headBotY + 0.04, headTopY + doc.head.endRadius * 0.72) * 0.45 +
+          headCenterY * 0.55,
         doc.headForwardTilt - doc.head.midRadius * 0.08
       );
-      const browTarget = new THREE.Vector3(ep.x, browY, baseHeadDepthZ);
+      const browTarget = new THREE.Vector3(browX, browY, baseHeadDepthZ);
       const browRayDir = browTarget.clone().sub(browSkullOrigin).normalize();
-      const browFallbackOrigin = new THREE.Vector3(ep.x, browY, baseHeadDepthZ + 0.035);
+      const browFallbackOrigin = new THREE.Vector3(browX, browY, baseHeadDepthZ + 0.035);
       attachFromSkullInterior(
         browSkullOrigin,
         browRayDir,
         browFallbackOrigin,
         browGroup,
-        doc.eyebrowThickness * 0.9,
+        browCfg.thickness * 0.9,
         0.45
       );
     });
@@ -6875,19 +7116,46 @@ export function buildCharacterRigAndMesh(
     });
   }
 
-  // Mouth (Closed curves with rounded ends OR Open inset black cavity with tongue & teeth + manual placement)
-  if (doc.mouthStyle !== 'none' && doc.mouthStyle !== 'beak') {
-    const ms = doc.mouthSize;
+  // Mouth (Closed curves with rounded ends OR Open inset black cavity with tongue & teeth + Left/Right/Both controls)
+  const leftMouth = ext.mouthSideConfig.left;
+  const rightMouth = ext.mouthSideConfig.right;
+  if (doc.mouthStyle !== 'none' && doc.mouthStyle !== 'beak' && (leftMouth.enabled || rightMouth.enabled)) {
+    const activeMouthCount = (leftMouth.enabled ? 1 : 0) + (rightMouth.enabled ? 1 : 0);
+    const ms =
+      activeMouthCount === 2
+        ? (leftMouth.size + rightMouth.size) * 0.5
+        : leftMouth.enabled
+          ? leftMouth.size
+          : rightMouth.size;
+    const avgOffsetY =
+      activeMouthCount === 2
+        ? (leftMouth.offsetY + rightMouth.offsetY) * 0.5
+        : leftMouth.enabled
+          ? leftMouth.offsetY
+          : rightMouth.offsetY;
+    const avgOffsetZ =
+      activeMouthCount === 2
+        ? (leftMouth.offsetZ + rightMouth.offsetZ) * 0.5
+        : leftMouth.enabled
+          ? leftMouth.offsetZ
+          : rightMouth.offsetZ;
+    const avgTiltDeg =
+      activeMouthCount === 2
+        ? (leftMouth.tiltDeg + rightMouth.tiltDeg) * 0.5
+        : leftMouth.enabled
+          ? leftMouth.tiltDeg
+          : rightMouth.tiltDeg;
+
     const mouthGroup = new THREE.Group();
     mouthGroup.name = 'CharMouth';
-    const manualTilt = THREE.MathUtils.degToRad(ext.mouthTiltDeg);
+    const manualTilt = THREE.MathUtils.degToRad(avgTiltDeg);
 
     if (isOpenMouth) {
       const openG = buildOpenMouthGroup(ext, ms, hasMuzzle);
       openG.rotation.x = manualTilt;
       mouthGroup.add(openG);
       const baseSurfaceBias = ext.mouthRecessEnabled ? -0.002 : 0.0005;
-      const totalBias = baseSurfaceBias + ext.mouthOffsetZ;
+      const totalBias = baseSurfaceBias + avgOffsetZ;
       if (cachedMouthSurfHit) {
         placeSurfaceHit(cachedMouthSurfHit, mouthGroup, totalBias, 0.08);
       } else {
@@ -6895,55 +7163,104 @@ export function buildCharacterRigAndMesh(
         attachToHeadSurface(rayOrigin, new THREE.Vector3(0, -0.08, 1).normalize(), mouthGroup, totalBias, 0.08);
       }
     } else {
-      const mouthMat = new THREE.MeshStandardMaterial({
-        color: doc.mouthColor,
+      const leftMat = new THREE.MeshStandardMaterial({
+        color: leftMouth.color,
         roughness: 0.48,
         metalness: 0.02,
       });
-      const wScale = ext.mouthWidthScale;
+      const rightMat =
+        leftMouth.color === rightMouth.color
+          ? leftMat
+          : new THREE.MeshStandardMaterial({
+              color: rightMouth.color,
+              roughness: 0.48,
+              metalness: 0.02,
+            });
+      const lS = leftMouth.size;
+      const rS = rightMouth.size;
+      const lW = leftMouth.widthScale;
+      const rW = rightMouth.widthScale;
+      const lDy = leftMouth.offsetY - avgOffsetY;
+      const rDy = rightMouth.offsetY - avgOffsetY;
+      const lDz = leftMouth.offsetZ - avgOffsetZ;
+      const rDz = rightMouth.offsetZ - avgOffsetZ;
+      const asymTiltDiff = leftMouth.tiltDeg - rightMouth.tiltDeg;
+      const lCornerTiltY = Math.sin(THREE.MathUtils.degToRad(asymTiltDiff * 0.5)) * 0.024;
+      const rCornerTiltY = -lCornerTiltY;
+
       if (doc.mouthStyle === 'catW') {
-        // Cute :3 bunny / kitty double-U mouth with soft rounded end caps
-        const leftPts = [
-          new THREE.Vector3(-0.046 * ms * wScale, 0.012 * ms, -0.005),
-          new THREE.Vector3(-0.023 * ms * wScale, -0.012 * ms, 0.006),
-          new THREE.Vector3(0, 0.005 * ms, 0.008),
-        ];
-        const rightPts = [
-          new THREE.Vector3(0, 0.005 * ms, 0.008),
-          new THREE.Vector3(0.023 * ms * wScale, -0.012 * ms, 0.006),
-          new THREE.Vector3(0.046 * ms * wScale, 0.012 * ms, -0.005),
-        ];
-        mouthGroup.add(createRoundedCurveMesh(leftPts, 0.0072 * ms, mouthMat, 10));
-        mouthGroup.add(createRoundedCurveMesh(rightPts, 0.0072 * ms, mouthMat, 10));
+        // Cute :3 bunny / kitty double-U mouth (Right = -X, Left = +X)
+        if (rightMouth.enabled) {
+          const rPts = [
+            new THREE.Vector3(-0.046 * rS * rW, 0.012 * rS + rDy + rCornerTiltY, -0.005 + rDz),
+            new THREE.Vector3(-0.023 * rS * rW, -0.012 * rS + rDy * 0.5, 0.006 + rDz * 0.5),
+            new THREE.Vector3(0, 0.005 * ms, 0.008),
+          ];
+          mouthGroup.add(createRoundedCurveMesh(rPts, 0.0072 * rS, rightMat, 10));
+        }
+        if (leftMouth.enabled) {
+          const lPts = [
+            new THREE.Vector3(0, 0.005 * ms, 0.008),
+            new THREE.Vector3(0.023 * lS * lW, -0.012 * lS + lDy * 0.5, 0.006 + lDz * 0.5),
+            new THREE.Vector3(0.046 * lS * lW, 0.012 * lS + lDy + lCornerTiltY, -0.005 + lDz),
+          ];
+          mouthGroup.add(createRoundedCurveMesh(lPts, 0.0072 * lS, leftMat, 10));
+        }
       } else {
-        const curvePts =
+        const rightEndPt =
           doc.mouthStyle === 'smirk'
-            ? [
-                new THREE.Vector3(-0.042 * ms * wScale, 0.004 * ms, 0),
-                new THREE.Vector3(0, -0.005 * ms, 0.008 * ms),
-                new THREE.Vector3(0.045 * ms * wScale, 0.018 * ms, -0.004 * ms),
-              ]
+            ? new THREE.Vector3(-0.042 * rS * rW, 0.004 * rS + rDy + rCornerTiltY, rDz)
             : doc.mouthStyle === 'frown'
-            ? [
-                new THREE.Vector3(-0.044 * ms * wScale, -0.012 * ms, -0.005 * ms),
-                new THREE.Vector3(0, 0.012 * ms, 0.008 * ms),
-                new THREE.Vector3(0.044 * ms * wScale, -0.012 * ms, -0.005 * ms),
-              ]
-            : [
-                new THREE.Vector3(-0.048 * ms * wScale, 0.016 * ms, -0.006 * ms),
-                new THREE.Vector3(0, -0.014 * ms, 0.008 * ms),
-                new THREE.Vector3(0.048 * ms * wScale, 0.016 * ms, -0.006 * ms),
-              ];
-        mouthGroup.add(createRoundedCurveMesh(curvePts, 0.0082 * ms, mouthMat, 14));
+              ? new THREE.Vector3(-0.044 * rS * rW, -0.012 * rS + rDy + rCornerTiltY, -0.005 * rS + rDz)
+              : new THREE.Vector3(-0.048 * rS * rW, 0.016 * rS + rDy + rCornerTiltY, -0.006 * rS + rDz);
+        const centerPt =
+          doc.mouthStyle === 'smirk'
+            ? new THREE.Vector3(0, -0.005 * ms, 0.008 * ms)
+            : doc.mouthStyle === 'frown'
+              ? new THREE.Vector3(0, 0.012 * ms, 0.008 * ms)
+              : new THREE.Vector3(0, -0.014 * ms, 0.008 * ms);
+        const leftEndPt =
+          doc.mouthStyle === 'smirk'
+            ? new THREE.Vector3(0.045 * lS * lW, 0.018 * lS + lDy + lCornerTiltY, -0.004 * lS + lDz)
+            : doc.mouthStyle === 'frown'
+              ? new THREE.Vector3(0.044 * lS * lW, -0.012 * lS + lDy + lCornerTiltY, -0.005 * lS + lDz)
+              : new THREE.Vector3(0.048 * lS * lW, 0.016 * lS + lDy + lCornerTiltY, -0.006 * lS + lDz);
+
+        if (leftMouth.enabled && rightMouth.enabled && leftMouth.color === rightMouth.color) {
+          mouthGroup.add(
+            createRoundedCurveMesh([rightEndPt, centerPt, leftEndPt], 0.0082 * ms, leftMat, 14)
+          );
+        } else {
+          if (rightMouth.enabled) {
+            const rMid = rightEndPt.clone().lerp(centerPt, 0.5);
+            rMid.y = (rightEndPt.y + centerPt.y) * 0.5 - 0.003 * rS;
+            mouthGroup.add(
+              createRoundedCurveMesh([rightEndPt, rMid, centerPt], 0.0082 * rS, rightMat, 10)
+            );
+          }
+          if (leftMouth.enabled) {
+            const lMid = centerPt.clone().lerp(leftEndPt, 0.5);
+            lMid.y = (centerPt.y + leftEndPt.y) * 0.5 - 0.003 * lS;
+            mouthGroup.add(
+              createRoundedCurveMesh([centerPt, lMid, leftEndPt], 0.0082 * lS, leftMat, 10)
+            );
+          }
+        }
 
         if (doc.mouthStyle === 'fangs') {
           const fangMat = new THREE.MeshStandardMaterial({ color: '#FFFFFF', roughness: 0.25 });
-          ([-1, 1] as const).forEach((s) => {
-            const fang = new THREE.Mesh(new THREE.ConeGeometry(0.009 * ms, 0.026 * ms, 8), fangMat);
+          if (rightMouth.enabled) {
+            const fang = new THREE.Mesh(new THREE.ConeGeometry(0.009 * rS, 0.026 * rS, 8), fangMat);
             fang.rotation.x = Math.PI;
-            fang.position.set(s * 0.026 * ms * wScale, 0.002 * ms, 0.005 * ms);
+            fang.position.set(-0.026 * rS * rW, 0.002 * rS + rDy * 0.6 + rCornerTiltY * 0.5, 0.005 * rS + rDz * 0.6);
             mouthGroup.add(fang);
-          });
+          }
+          if (leftMouth.enabled) {
+            const fang = new THREE.Mesh(new THREE.ConeGeometry(0.009 * lS, 0.026 * lS, 8), fangMat);
+            fang.rotation.x = Math.PI;
+            fang.position.set(0.026 * lS * lW, 0.002 * lS + lDy * 0.6 + lCornerTiltY * 0.5, 0.005 * lS + lDz * 0.6);
+            mouthGroup.add(fang);
+          }
         }
       }
       mouthGroup.rotation.x = manualTilt;
@@ -6952,7 +7269,7 @@ export function buildCharacterRigAndMesh(
         rayOrigin,
         new THREE.Vector3(0, -0.08, 1).normalize(),
         mouthGroup,
-        0.003 + ext.mouthOffsetZ,
+        0.003 + avgOffsetZ,
         0.14
       );
     }
