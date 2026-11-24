@@ -3,7 +3,12 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import type {
   CharacterAddonConfig,
   CharacterBeakStyle,
+  CharacterBodyPartKey,
   CharacterEyebrowExpression,
+  CharacterHairDetailStyle,
+  CharacterHairLayoutMode,
+  CharacterHairSculptConfig,
+  CharacterHairSideConfig,
   CharacterHairStyle,
   CharacterHeadSegmentProfile,
   CharacterLimbProfile,
@@ -38,6 +43,18 @@ export interface CharacterPresetInfo {
   build: () => CharacterMakerDoc;
 }
 
+export interface CharacterSegmentGuide {
+  partKey: CharacterBodyPartKey;
+  boneIndex: number;
+  rings: {
+    center: [number, number, number];
+    axis: [number, number, number];
+    rx: number;
+    rz: number;
+  }[];
+  spine?: [[number, number, number], [number, number, number]];
+}
+
 export interface BuiltCharacterAsset {
   root: THREE.Group;
   skinnedMesh: THREE.SkinnedMesh;
@@ -54,6 +71,10 @@ export interface BuiltCharacterAsset {
   partAnchors: { key: string; worldPos: THREE.Vector3 }[];
   vertexCount: number;
   triangleCount: number;
+  partWeights?: Uint8Array;
+  seamZones?: Int16Array;
+  seamGaps?: Float32Array;
+  segmentGuides?: CharacterSegmentGuide[];
 }
 
 export const MUZZLE_PRESET_OPTIONS: { id: CharacterMuzzlePresetId; label: string }[] = [
@@ -354,11 +375,437 @@ export interface ResolvedCharacterExtras {
   hairRotY: number;
   hairRotZ: number;
   hairScale: number;
+  hairConfig: CharacterHairSculptConfig;
   surfaceCoat: CharacterSurfaceCoatConfig;
   spikes: CharacterSpikesConfig;
   addons: CharacterAddonConfig;
   headCrown: CharacterHeadSegmentProfile;
   headJaw: CharacterHeadSegmentProfile;
+}
+
+export function createDefaultHairSideConfig(
+  overrides?: Partial<CharacterHairSideConfig>
+): CharacterHairSideConfig {
+  return {
+    enabled: true,
+    skinHug: 0.004,
+    fullness: 1.0,
+    flatness: 0.92,
+    length: 0.65,
+    spikiness: 0.12,
+    puffiness: 0.1,
+    puffScale: 1.0,
+    offsetX: 0,
+    offsetY: 0,
+    offsetZ: 0,
+    scale: 1.0,
+    flare: 0.0,
+    bangsDrop: 0.52,
+    ...overrides,
+  };
+}
+
+export function createHairPresetConfig(style: CharacterHairStyle): CharacterHairSculptConfig {
+  const makeSym = (
+    sideOverrides: Partial<CharacterHairSideConfig>,
+    topOverrides?: Partial<Omit<CharacterHairSculptConfig, 'left' | 'right'>>
+  ): CharacterHairSculptConfig => {
+    const left = createDefaultHairSideConfig(sideOverrides);
+    const right = createDefaultHairSideConfig(sideOverrides);
+    return {
+      layout: 'partedSides',
+      partGap: 0.012,
+      partShift: 0,
+      mirrorSides: true,
+      left,
+      right,
+      detailStyle: 'none',
+      detailScale: 1.0,
+      detailCurl: 0.8,
+      detailOffsetY: 0,
+      ...topOverrides,
+    };
+  };
+
+  switch (style) {
+    case 'none':
+      return makeSym(
+        { enabled: false },
+        { partGap: 0.01, detailStyle: 'none' }
+      );
+    case 'buzzFade':
+      return makeSym({
+        skinHug: 0.002,
+        fullness: 0.92,
+        flatness: 0.58,
+        length: 0.28,
+        spikiness: 0.05,
+        puffiness: 0.42,
+        puffScale: 0.56,
+        flare: -0.25,
+        bangsDrop: 0.22,
+      }, { partGap: 0.002 });
+    case 'shortCrop':
+      return makeSym({
+        skinHug: 0.009,
+        fullness: 1.06,
+        flatness: 0.88,
+        length: 0.46,
+        spikiness: 0.14,
+        puffiness: 0.1,
+        flare: -0.18,
+        bangsDrop: 0.44,
+      }, { partGap: 0.006 });
+    case 'sidePart': {
+      const left = createDefaultHairSideConfig({
+        skinHug: 0.011,
+        fullness: 1.12,
+        flatness: 0.94,
+        length: 0.54,
+        spikiness: 0.1,
+        puffiness: 0.06,
+        flare: 0.08,
+        bangsDrop: 0.52,
+      });
+      const right = createDefaultHairSideConfig({
+        skinHug: 0.004,
+        fullness: 0.86,
+        flatness: 0.72,
+        length: 0.42,
+        spikiness: 0.08,
+        puffiness: 0.04,
+        flare: -0.22,
+        bangsDrop: 0.22,
+      });
+      return {
+        layout: 'partedSides',
+        partGap: 0.012,
+        partShift: -0.042,
+        mirrorSides: false,
+        left,
+        right,
+        detailStyle: 'none',
+        detailScale: 1.0,
+        detailCurl: 0.7,
+        detailOffsetY: 0,
+      };
+    }
+    case 'pompadour':
+      return makeSym(
+        {
+          skinHug: 0.008,
+          fullness: 0.98,
+          flatness: 0.82,
+          length: 0.45,
+          spikiness: 0.08,
+          puffiness: 0.05,
+          flare: -0.2,
+          bangsDrop: 0.08,
+        },
+        { partGap: 0.004, detailStyle: 'pompCrest', detailScale: 1.05 }
+      );
+    case 'messySpiky':
+      return makeSym(
+        {
+          skinHug: 0.012,
+          fullness: 1.02,
+          flatness: 1.18,
+          length: 0.58,
+          spikiness: 0.82,
+          puffiness: 0.1,
+          flare: 0.45,
+          bangsDrop: 0.52,
+        },
+        { layout: 'spikySides', partGap: 0.006 }
+      );
+    case 'undercut':
+      return makeSym(
+        {
+          skinHug: 0.008,
+          fullness: 1.0,
+          flatness: 1.22,
+          length: 0.48,
+          spikiness: 0.44,
+          puffiness: 0.06,
+          flare: 0.18,
+          bangsDrop: 0.42,
+        },
+        { layout: 'spikySides', partGap: 0.008, partShift: -0.022 }
+      );
+    case 'surferCurtains':
+      return makeSym(
+        {
+          skinHug: 0.012,
+          fullness: 1.08,
+          flatness: 1.02,
+          length: 0.96,
+          spikiness: 0.12,
+          puffiness: 0.12,
+          flare: 0.24,
+          bangsDrop: 0.68,
+        },
+        { partGap: 0.02 }
+      );
+    case 'longStraight':
+      return makeSym(
+        {
+          skinHug: 0.01,
+          fullness: 1.08,
+          flatness: 0.96,
+          length: 1.65,
+          spikiness: 0.06,
+          puffiness: 0.05,
+          flare: -0.05,
+          bangsDrop: 0.46,
+        },
+        { partGap: 0.012 }
+      );
+    case 'longEndCurls':
+      return makeSym(
+        {
+          skinHug: 0.012,
+          fullness: 1.1,
+          flatness: 1.0,
+          length: 1.52,
+          spikiness: 0.02,
+          puffiness: 0.16,
+          puffScale: 0.85,
+          flare: 0.12,
+          bangsDrop: 0.48,
+        },
+        { partGap: 0.012, detailStyle: 'endCurls', detailScale: 1.08, detailCurl: 1.05 }
+      );
+    case 'bobCut':
+      return makeSym(
+        {
+          skinHug: 0.01,
+          fullness: 1.08,
+          flatness: 0.94,
+          length: 0.82,
+          spikiness: 0.04,
+          puffiness: 0.08,
+          flare: -0.44,
+          bangsDrop: 0.56,
+        },
+        { partGap: 0.012 }
+      );
+    case 'bobFlip':
+      return makeSym(
+        {
+          skinHug: 0.012,
+          fullness: 1.08,
+          flatness: 0.96,
+          length: 0.84,
+          spikiness: 0.04,
+          puffiness: 0.1,
+          flare: 0.52,
+          bangsDrop: 0.5,
+        },
+        { partGap: 0.014, detailStyle: 'bobFlip', detailScale: 1.05, detailCurl: 1.0 }
+      );
+    case 'wavyShoulder':
+      return makeSym(
+        {
+          skinHug: 0.012,
+          fullness: 1.12,
+          flatness: 1.04,
+          length: 1.24,
+          spikiness: 0.04,
+          puffiness: 0.4,
+          puffScale: 0.86,
+          flare: 0.24,
+          bangsDrop: 0.48,
+        },
+        { partGap: 0.014, detailStyle: 'endCurls', detailScale: 0.82, detailCurl: 0.68 }
+      );
+    case 'twinPigtails':
+      return makeSym(
+        {
+          skinHug: 0.002,
+          fullness: 0.92,
+          flatness: 0.86,
+          length: 0.6,
+          spikiness: 0.08,
+          puffiness: 0.1,
+          flare: -0.15,
+          bangsDrop: 0.6,
+        },
+        { partGap: 0.018, detailStyle: 'pigtails', detailScale: 1.05, detailCurl: 0.78 }
+      );
+    case 'highBun':
+      return makeSym(
+        {
+          skinHug: -0.004,
+          fullness: 0.9,
+          flatness: 0.76,
+          length: 0.5,
+          spikiness: 0.04,
+          puffiness: 0.08,
+          flare: -0.35,
+          bangsDrop: 0.34,
+        },
+        { partGap: 0.006, detailStyle: 'highBun', detailScale: 1.08 }
+      );
+    case 'braidedCrown':
+      return makeSym(
+        {
+          skinHug: 0.002,
+          fullness: 0.96,
+          flatness: 0.86,
+          length: 0.68,
+          spikiness: 0.04,
+          puffiness: 0.22,
+          flare: -0.15,
+          bangsDrop: 0.4,
+        },
+        { partGap: 0.012, detailStyle: 'braidPlait', detailScale: 1.0 }
+      );
+    case 'ponytail':
+      return makeSym(
+        {
+          skinHug: -0.004,
+          fullness: 0.94,
+          flatness: 0.8,
+          length: 0.56,
+          spikiness: 0.06,
+          puffiness: 0.08,
+          flare: -0.32,
+          bangsDrop: 0.42,
+        },
+        { partGap: 0.008, detailStyle: 'ponytail', detailScale: 1.05, detailCurl: 0.6 }
+      );
+    case 'curlyAfro':
+      return makeSym(
+        {
+          skinHug: 0.018,
+          fullness: 1.16,
+          flatness: 1.18,
+          length: 0.92,
+          spikiness: 0.0,
+          puffiness: 1.0,
+          puffScale: 1.0,
+          flare: 0.2,
+          bangsDrop: 0.3,
+        },
+        { layout: 'afroSides', partGap: 0.004 }
+      );
+    case 'spikyTufts':
+      return makeSym(
+        {
+          skinHug: 0.004,
+          fullness: 0.95,
+          flatness: 1.25,
+          length: 0.46,
+          spikiness: 0.95,
+          puffiness: 0.0,
+          flare: 0.55,
+          bangsDrop: 0.36,
+        },
+        { layout: 'spikySides', partGap: 0.004 }
+      );
+    case 'mohawk':
+      return makeSym(
+        {
+          skinHug: -0.005,
+          fullness: 0.95,
+          flatness: 1.38,
+          length: 0.55,
+          spikiness: 0.9,
+          puffiness: 0.05,
+          flare: 0.15,
+          bangsDrop: 0.25,
+        },
+        { layout: 'crest', partGap: 0.0 }
+      );
+    case 'curlSwirl':
+      return makeSym(
+        {
+          skinHug: 0.002,
+          fullness: 1.0,
+          flatness: 1.15,
+          length: 0.45,
+          spikiness: 0.05,
+          puffiness: 0.3,
+          flare: 0.2,
+          bangsDrop: 0.4,
+        },
+        { layout: 'crest', partGap: 0.0 }
+      );
+    case 'mushroomCap':
+      return makeSym(
+        {
+          skinHug: 0.032,
+          fullness: 1.38,
+          flatness: 0.72,
+          length: 0.72,
+          spikiness: 0.0,
+          puffiness: 0.28,
+          puffScale: 1.1,
+          flare: 0.65,
+          bangsDrop: 0.78,
+        },
+        { partGap: 0.002 }
+      );
+    case 'horseMane':
+      return makeSym(
+        {
+          skinHug: 0.004,
+          fullness: 1.0,
+          flatness: 1.1,
+          length: 0.95,
+          spikiness: 0.35,
+          puffiness: 0.05,
+          flare: 0.2,
+          bangsDrop: 0.45,
+        },
+        { layout: 'mane', partGap: 0.0 }
+      );
+    case 'lionMane':
+      return makeSym(
+        {
+          skinHug: 0.022,
+          fullness: 1.24,
+          flatness: 1.15,
+          length: 0.92,
+          spikiness: 0.25,
+          puffiness: 0.95,
+          puffScale: 1.18,
+          flare: 0.45,
+          bangsDrop: 0.35,
+        },
+        { layout: 'mane', partGap: 0.0 }
+      );
+    case 'featherTuft':
+      return makeSym(
+        {
+          skinHug: -0.002,
+          fullness: 0.8,
+          flatness: 1.25,
+          length: 0.42,
+          spikiness: 0.72,
+          puffiness: 0.0,
+          flare: 0.1,
+          bangsDrop: 0.2,
+        },
+        { layout: 'crest', partGap: 0.0 }
+      );
+    case 'fluffyBangs':
+    default:
+      return makeSym(
+        {
+          skinHug: 0.006,
+          fullness: 1.05,
+          flatness: 0.88,
+          length: 0.56,
+          spikiness: 0.05,
+          puffiness: 0.88,
+          puffScale: 0.92,
+          flare: 0.15,
+          bangsDrop: 0.76,
+        },
+        { partGap: 0.01 }
+      );
+  }
 }
 
 export function createDefaultHeadCrown(head: CharacterLimbProfile): CharacterHeadSegmentProfile {
@@ -388,8 +835,8 @@ export function createDefaultHeadJaw(head: CharacterLimbProfile): CharacterHeadS
     squashZ: Number(((head.squashZ ?? 1.0) * 0.96).toFixed(2)),
     color: head.color,
     offsetY: 0.018,
-    offsetZ: 0.016,
-    blendScale: 0.62,
+    offsetZ: 0.022,
+    blendScale: 0.48,
   };
 }
 
@@ -515,6 +962,21 @@ export function resolveCharacterExtras(doc: CharacterMakerDoc): ResolvedCharacte
     hairRotY: doc.hairRotY ?? 0,
     hairRotZ: doc.hairRotZ ?? 0,
     hairScale: doc.hairScale ?? 1.0,
+    hairConfig: (() => {
+      const baseCfg = createHairPresetConfig(doc.hairStyle);
+      const userCfg = doc.hairConfig;
+      if (!userCfg) return baseCfg;
+      const left = { ...baseCfg.left, ...(userCfg.left ?? {}) };
+      const right = userCfg.mirrorSides
+        ? { ...left }
+        : { ...baseCfg.right, ...(userCfg.right ?? {}) };
+      return {
+        ...baseCfg,
+        ...userCfg,
+        left,
+        right,
+      };
+    })(),
     surfaceCoat: { ...createDefaultSurfaceCoat(), ...(doc.surfaceCoat ?? {}) },
     spikes: { ...createDefaultSpikesConfig(), ...(doc.spikes ?? {}) },
     addons: { ...createDefaultAddonConfig(), ...(doc.addons ?? {}) },
@@ -935,7 +1397,7 @@ export const CHARACTER_PRESETS: CharacterPresetInfo[] = [
           midRadius: 0.044,
           endRadius: 0.052,
           curvature: -0.06,
-          length: 0.185,
+          length: 0.118,
           squashX: 0.96,
           squashZ: 0.96,
           color: '#E7B892',
@@ -2582,19 +3044,252 @@ function createSurfaceCoatTextures(coat: CharacterSurfaceCoatConfig): {
   };
 }
 
-/** Builds layered 3D hair meshes mounted directly on Head bone so placement, rotation & scale move freely without skull SDF melting */
+function createSculptedLockGeometry(
+  pts: THREE.Vector3[],
+  rBase: number,
+  rMid: number,
+  rTip: number,
+  flattenRadial = 0.55,
+  spikeSharpness = 0.1,
+  scalpCenterRef?: THREE.Vector3
+): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.45);
+  const lengthSegs = Math.max(10, Math.min(22, pts.length * 4));
+  const radialSegs = 10;
+  const ringVerts = radialSegs + 1;
+  const vertCount = (lengthSegs + 1) * ringVerts;
+  const positions = new Float32Array(vertCount * 3);
+  const indices: number[] = [];
+
+  const tangents: THREE.Vector3[] = [];
+  for (let i = 0; i <= lengthSegs; i++) {
+    tangents.push(curve.getTangent(i / lengthSegs).normalize());
+  }
+
+  // Orient normal axis outward from the skull center when available so ribbons wrap wide & flat against the scalp
+  const normals: THREE.Vector3[] = [];
+  const binormals: THREE.Vector3[] = [];
+  const t0 = tangents[0];
+  let n0: THREE.Vector3;
+  if (scalpCenterRef) {
+    const out0 = pts[0].clone().sub(scalpCenterRef);
+    out0.addScaledVector(t0, -out0.dot(t0));
+    if (out0.lengthSq() > 1e-6) {
+      n0 = out0.normalize();
+    } else {
+      const refVec = Math.abs(t0.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      n0 = new THREE.Vector3().crossVectors(t0, refVec).normalize();
+    }
+  } else {
+    const refVec = Math.abs(t0.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    n0 = new THREE.Vector3().crossVectors(t0, refVec).normalize();
+  }
+  normals.push(n0);
+  binormals.push(new THREE.Vector3().crossVectors(t0, n0).normalize());
+
+  const rotQ = new THREE.Quaternion();
+  for (let i = 1; i <= lengthSegs; i++) {
+    const prevT = tangents[i - 1];
+    const curT = tangents[i];
+    const dotVal = THREE.MathUtils.clamp(prevT.dot(curT), -1, 1);
+    const prevN = normals[i - 1];
+    let nextN: THREE.Vector3;
+    if (dotVal < 0.9999 && dotVal > -0.9999) {
+      const axis = new THREE.Vector3().crossVectors(prevT, curT).normalize();
+      rotQ.setFromAxisAngle(axis, Math.acos(dotVal));
+      nextN = prevN.clone().applyQuaternion(rotQ).normalize();
+    } else {
+      nextN = prevN.clone();
+    }
+    if (scalpCenterRef) {
+      const pCur = curve.getPoint(i / lengthSegs);
+      const outDir = pCur.sub(scalpCenterRef);
+      outDir.addScaledVector(curT, -outDir.dot(curT));
+      if (outDir.lengthSq() > 1e-6) {
+        outDir.normalize();
+        if (nextN.dot(outDir) < 0) outDir.negate();
+        nextN.lerp(outDir, 0.55).normalize();
+      }
+    }
+    normals.push(nextN);
+    binormals.push(new THREE.Vector3().crossVectors(curT, nextN).normalize());
+  }
+
+  const tmpPt = new THREE.Vector3();
+  const sharp = THREE.MathUtils.clamp(spikeSharpness, 0, 1);
+  const tipMin = rTip * (1 - sharp * 0.72);
+
+  for (let i = 0; i <= lengthSegs; i++) {
+    const u = i / lengthSegs;
+    const p = curve.getPoint(u, tmpPt);
+    const n = normals[i];
+    const b = binormals[i];
+
+    // Smooth root swell -> mid body -> feathered/tapered tip
+    let rad: number;
+    if (u < 0.22) {
+      const k = u / 0.22;
+      rad = THREE.MathUtils.lerp(rBase * 0.78, rMid, 0.5 - 0.5 * Math.cos(k * Math.PI));
+    } else {
+      const k = (u - 0.22) / 0.78;
+      const taperPow = 1 + sharp * 0.85;
+      rad = THREE.MathUtils.lerp(rMid, Math.max(0.003, tipMin), Math.pow(k, taperPow));
+    }
+    if (i === lengthSegs) {
+      rad = Math.max(0.0022, rad * (0.58 - sharp * 0.42));
+    }
+
+    // Thin radially against scalp (n), wide tangentially across neighboring locks (b)
+    const rOut = rad * THREE.MathUtils.lerp(flattenRadial, 0.9, sharp * 0.65);
+    const rWide = rad * (1.35 - sharp * 0.35);
+
+    for (let j = 0; j <= radialSegs; j++) {
+      const ang = (j / radialSegs) * Math.PI * 2;
+      const groove = 1 + 0.08 * Math.cos(ang * 2) * (1 - u * 0.4);
+      const ca = Math.cos(ang) * rOut * groove;
+      const sa = Math.sin(ang) * rWide * groove;
+      const idx = (i * ringVerts + j) * 3;
+      positions[idx] = p.x + n.x * ca + b.x * sa;
+      positions[idx + 1] = p.y + n.y * ca + b.y * sa;
+      positions[idx + 2] = p.z + n.z * ca + b.z * sa;
+    }
+  }
+
+  for (let i = 0; i < lengthSegs; i++) {
+    for (let j = 0; j < radialSegs; j++) {
+      const a = i * ringVerts + j;
+      const b = (i + 1) * ringVerts + j;
+      const c = (i + 1) * ringVerts + (j + 1);
+      const d = i * ringVerts + (j + 1);
+      indices.push(a, d, b, d, c, b);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function createSpiralCurlGeometry(
+  anchor: THREE.Vector3,
+  outwardDir: THREE.Vector3,
+  radius: number,
+  drop: number,
+  turns: number,
+  tubeBaseR: number
+): THREE.BufferGeometry {
+  const pts: THREE.Vector3[] = [];
+  const steps = Math.max(10, Math.round(turns * 10));
+  const dir = outwardDir.clone().normalize();
+  const sidePerp = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+  if (sidePerp.lengthSq() < 0.01) sidePerp.set(1, 0, 0);
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const ang = t * turns * Math.PI * 2;
+    const coilR = radius * (0.45 + 0.55 * Math.sin(t * Math.PI * 0.85));
+    pts.push(
+      new THREE.Vector3(
+        anchor.x + dir.x * (Math.cos(ang) * coilR * 0.7 + coilR * 0.35) + sidePerp.x * Math.sin(ang) * coilR,
+        anchor.y - t * drop,
+        anchor.z + dir.z * (Math.cos(ang) * coilR * 0.7 + coilR * 0.35) + sidePerp.z * Math.sin(ang) * coilR
+      )
+    );
+  }
+  return createSculptedLockGeometry(pts, tubeBaseR, tubeBaseR * 0.92, tubeBaseR * 0.38, 0.88, 0.08);
+}
+
+interface HeadHairSpatialContext {
+  headSdf: SdfFieldEvaluator;
+  headBonePos: THREE.Vector3;
+  headBotY: number;
+  crownEndY: number;
+  headForwardTilt: number;
+  crownOffsetZ: number;
+  eyeLocalY: number;
+  eyeSpacing: number;
+  eyeRadius: number;
+}
+
+/** Builds layered 3D sculpted dual-side hair conformed directly to the sculpted head SDF (no upside-down bowl). */
 function buildLayeredHairGroup(
   doc: CharacterMakerDoc,
   ext: ResolvedCharacterExtras,
   crownLocalY: number,
   skullRx: number,
-  skullRz: number
+  skullRz: number,
+  spatial?: HeadHairSpatialContext
 ): THREE.Group | null {
   if (doc.hairStyle === 'none') return null;
 
+  const cfg = ext.hairConfig;
+  if (!cfg.left.enabled && !cfg.right.enabled && cfg.layout !== 'crest' && cfg.layout !== 'mane') {
+    return null;
+  }
+
   const rootGroup = new THREE.Group();
   rootGroup.name = 'CharHair';
-  rootGroup.position.set(ext.hairOffsetX, crownLocalY + ext.hairOffsetY, ext.hairOffsetZ);
+
+  // Measure actual sculpted head coordinates via headSdf so hair hugs any custom skull/crown shape
+  let crownTopLocal = new THREE.Vector3(0, crownLocalY, 0);
+  let rx = Math.max(0.09, skullRx * 1.01);
+  let rz = Math.max(0.09, skullRz * 1.01);
+  let ry = Math.max(rx * 0.72, crownLocalY * 0.98);
+  let skullCy = -ry;
+  let eyeCenterY = -ry * 0.35;
+  let eyeSpacing = doc.eyeSpacing;
+  let eyeRadius = doc.eyeSize * 0.8;
+
+  // Interior spine points in world space for SDF outward ray projection
+  const spineLowWorld = new THREE.Vector3(
+    0,
+    spatial ? THREE.MathUtils.lerp(spatial.headBotY, spatial.headBonePos.y, 0.65) : 0,
+    spatial ? spatial.headForwardTilt : 0
+  );
+  const spineTopWorld = new THREE.Vector3(
+    0,
+    spatial ? Math.max(spatial.headBonePos.y + 0.04, spatial.crownEndY - 0.015) : 0,
+    spatial ? THREE.MathUtils.lerp(spatial.headForwardTilt, spatial.headForwardTilt * 0.85 + spatial.crownOffsetZ, 0.75) : 0
+  );
+
+  if (spatial) {
+    eyeSpacing = spatial.eyeSpacing;
+    eyeRadius = spatial.eyeRadius;
+    // Ensure spineTopWorld sits strictly inside the SDF interior
+    for (let s = 0; s < 5; s++) {
+      if (spatial.headSdf.evaluate(spineTopWorld.x, spineTopWorld.y, spineTopWorld.z) < -0.015) break;
+      spineTopWorld.lerp(spatial.headBonePos, 0.25);
+    }
+    const midSpine = spineLowWorld.clone().lerp(spineTopWorld, 0.55);
+    if (spatial.headSdf.evaluate(midSpine.x, midSpine.y, midSpine.z) >= -0.01) {
+      midSpine.copy(spatial.headBonePos);
+    }
+
+    const toHeadLocal = (w: THREE.Vector3) => w.clone().sub(spatial.headBonePos);
+    const probeOut = (orig: THREE.Vector3, dir: THREE.Vector3) =>
+      spatial.headSdf.projectOutwardFromInterior(orig, dir, 0.85) ??
+      spatial.headSdf.projectPointToSurface(orig.clone().addScaledVector(dir, 0.24), dir, 22);
+
+    const topHit = probeOut(spineTopWorld, new THREE.Vector3(0, 1, 0));
+    const rightHit = probeOut(midSpine, new THREE.Vector3(1, 0.08, 0).normalize());
+    const frontHit = probeOut(midSpine, new THREE.Vector3(0, 0.15, 1).normalize());
+    const backHit = probeOut(midSpine, new THREE.Vector3(0, 0.12, -1).normalize());
+
+    crownTopLocal = toHeadLocal(topHit.point);
+    rx = Math.max(0.085, Math.abs(rightHit.point.x - midSpine.x));
+    rz = Math.max(0.085, (Math.abs(frontHit.point.z - midSpine.z) + Math.abs(backHit.point.z - midSpine.z)) * 0.5);
+    ry = Math.max(rx * 0.65, topHit.point.y - midSpine.y);
+    skullCy = -ry;
+    eyeCenterY = spatial.eyeLocalY - crownTopLocal.y;
+  }
+
+  rootGroup.position.set(
+    ext.hairOffsetX,
+    crownTopLocal.y + ext.hairOffsetY,
+    crownTopLocal.z + ext.hairOffsetZ
+  );
   rootGroup.rotation.set(
     THREE.MathUtils.degToRad(ext.hairRotX),
     THREE.MathUtils.degToRad(ext.hairRotY),
@@ -2608,422 +3303,710 @@ function buildLayeredHairGroup(
 
   const hairMat = new THREE.MeshStandardMaterial({
     color: doc.hairColor,
-    roughness: 0.62,
+    roughness: 0.6,
     metalness: 0.03,
+    side: THREE.DoubleSide,
   });
   const accentMat = new THREE.MeshStandardMaterial({
     color: ext.hairAccentColor,
-    roughness: 0.42,
+    roughness: 0.4,
     metalness: 0.06,
+    side: THREE.DoubleSide,
   });
 
-  const r = Math.max(0.11, skullRx * 1.03);
-  const rz = Math.max(0.11, skullRz * 1.03);
+  const r = (rx + rz) * 0.5;
+  const scalpCenterLocal = new THREE.Vector3(0, skullCy, 0);
 
-  const addCap = (heightFrac = 0.65, yShift = -r * 0.36, capMat = hairMat) => {
-    const capGeo = new THREE.SphereGeometry(1, 20, 14, 0, Math.PI * 2, 0, Math.PI * heightFrac);
-    const cap = new THREE.Mesh(capGeo, capMat);
-    cap.scale.set(r * 1.04, r * 0.96, rz * 1.05);
-    cap.position.set(0, yShift, -rz * 0.03);
-    cap.rotation.x = -0.22;
-    cap.castShadow = true;
-    scaleGroup.add(cap);
-    return cap;
-  };
-
-  const addStrand = (
+  const addLockMesh = (
+    parent: THREE.Object3D,
     pts: THREE.Vector3[],
     rBase: number,
+    rMid: number,
     rTip: number,
-    mat = hairMat,
-    flattenX = 1.0
+    flatten = 0.52,
+    spike = 0.1,
+    mat = hairMat
   ) => {
-    const segs = Math.max(2, pts.length - 1);
-    for (let i = 0; i < segs; i++) {
-      const f0 = i / segs;
-      const f1 = (i + 1) / segs;
-      const rad0 = THREE.MathUtils.lerp(rBase, rTip, f0);
-      const rad1 = THREE.MathUtils.lerp(rBase, rTip, f1);
-      const a = pts[i];
-      const b = pts[i + 1];
-      const dir = b.clone().sub(a);
-      const len = Math.max(0.01, dir.length());
-      const geo = new THREE.CylinderGeometry(rad1, rad0, len * 1.08, 10);
-      geo.scale(flattenX, 1, 1);
-      const m = new THREE.Mesh(geo, mat);
-      m.position.copy(a).lerp(b, 0.5);
-      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-      m.castShadow = true;
-      scaleGroup.add(m);
-    }
-    const tipBall = new THREE.Mesh(new THREE.SphereGeometry(rTip * 0.98, 8, 6), mat);
-    tipBall.position.copy(pts[pts.length - 1]);
-    tipBall.scale.set(flattenX, 1, 1);
-    scaleGroup.add(tipBall);
+    const geo = createSculptedLockGeometry(pts, rBase, rMid, rTip, flatten, spike, scalpCenterLocal);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    parent.add(mesh);
+    return mesh;
   };
 
-  const style: CharacterHairStyle = doc.hairStyle;
+  // Sample exact SDF skin surface point + outward normal in scaleGroup-local coordinates
+  const sampleHeadSurface = (
+    sideSign: 1 | -1,
+    phi: number,
+    az: number,
+    extraLift: number,
+    flatnessMult = 1.0
+  ): { point: THREE.Vector3; normal: THREE.Vector3 } => {
+    const dir = new THREE.Vector3(
+      sideSign * Math.sin(phi) * Math.sin(az),
+      Math.cos(phi),
+      Math.sin(phi) * Math.cos(az)
+    ).normalize();
 
-  if (style === 'buzzFade') {
-    addCap(0.56, -r * 0.38);
-  } else if (style === 'shortCrop') {
-    addCap(0.62, -r * 0.35);
-    // Crisp layered front bangs locks
-    for (let i = -2; i <= 2; i++) {
-      const x = i * r * 0.32;
-      addStrand(
-        [
-          new THREE.Vector3(x * 0.7, r * 0.28, rz * 0.38),
-          new THREE.Vector3(x * 0.92, r * 0.04, rz * 0.92),
-          new THREE.Vector3(x * 0.96, -r * 0.14, rz * 0.88),
-        ],
-        0.028,
-        0.012
+    if (spatial) {
+      const upperMix = THREE.MathUtils.clamp(1 - phi / 1.35, 0, 1);
+      const origWorld = spineLowWorld.clone().lerp(spineTopWorld, 0.42 + upperMix * 0.52);
+      if (spatial.headSdf.evaluate(origWorld.x, origWorld.y, origWorld.z) >= -0.01) {
+        origWorld.copy(spatial.headBonePos);
+      }
+      const hit =
+        spatial.headSdf.projectOutwardFromInterior(origWorld, dir, 0.85) ??
+        spatial.headSdf.projectPointToSurface(origWorld.clone().addScaledVector(dir, r), dir, 22);
+      const pt = hit.point.clone().sub(spatial.headBonePos).sub(crownTopLocal);
+      const crownLiftTerm = Math.max(0, hit.normal.y) * (flatnessMult - 0.92) * 0.045;
+      pt.addScaledVector(hit.normal, extraLift + crownLiftTerm);
+      return { point: pt, normal: hit.normal.clone().normalize() };
+    }
+
+    // Fallback analytic ellipsoid if spatial context is absent
+    const sp = Math.sin(phi);
+    const cp = Math.cos(phi);
+    const pt = new THREE.Vector3(
+      sideSign * Math.sin(az) * sp * rx,
+      skullCy + cp * ry,
+      Math.cos(az) * sp * rz
+    );
+    const normal = new THREE.Vector3(pt.x / rx, (pt.y - skullCy) / ry, pt.z / rz).normalize();
+    const crownLiftTerm = Math.max(0, normal.y) * (flatnessMult - 0.92) * 0.045;
+    pt.addScaledVector(normal, extraLift + crownLiftTerm);
+    return { point: pt, normal };
+  };
+
+  // Sample exact SDF skin point along the crown part line at lateral xOffset and forward/back angle (-1..+1)
+  const samplePartLineSurface = (
+    partXLocal: number,
+    zFrac: number,
+    extraLift: number,
+    flatnessMult = 1.0
+  ): { point: THREE.Vector3; normal: THREE.Vector3 } => {
+    const phiAngle = zFrac * 0.82; // 0 = crown top, + = toward forehead, - = toward occiput
+    const dir = new THREE.Vector3(
+      THREE.MathUtils.clamp(partXLocal / Math.max(0.08, rx), -0.65, 0.65),
+      Math.cos(phiAngle),
+      Math.sin(phiAngle)
+    ).normalize();
+    if (spatial) {
+      const origWorld = spineLowWorld.clone().lerp(spineTopWorld, 0.72);
+      origWorld.x += partXLocal * 0.35;
+      if (spatial.headSdf.evaluate(origWorld.x, origWorld.y, origWorld.z) >= -0.01) {
+        origWorld.copy(spatial.headBonePos);
+      }
+      const hit =
+        spatial.headSdf.projectOutwardFromInterior(origWorld, dir, 0.85) ??
+        spatial.headSdf.projectPointToSurface(origWorld.clone().addScaledVector(dir, r), dir, 22);
+      const pt = hit.point.clone().sub(spatial.headBonePos).sub(crownTopLocal);
+      const crownLiftTerm = Math.max(0, hit.normal.y) * (flatnessMult - 0.92) * 0.045;
+      pt.addScaledVector(hit.normal, extraLift + crownLiftTerm);
+      return { point: pt, normal: hit.normal.clone().normalize() };
+    }
+    const base = sampleHeadSurface(partXLocal >= 0 ? 1 : -1, Math.abs(phiAngle), zFrac >= 0 ? 0.15 : Math.PI - 0.15, extraLift, flatnessMult);
+    base.point.x = partXLocal;
+    return base;
+  };
+
+  const partX = THREE.MathUtils.clamp(cfg.partShift, -rx * 0.58, rx * 0.58);
+  const halfPartGap = Math.max(0, cfg.partGap * 0.5);
+
+  const buildSideHair = (sideSign: 1 | -1, sideCfg: CharacterHairSideConfig) => {
+    if (!sideCfg.enabled) return;
+
+    const sideGroup = new THREE.Group();
+    sideGroup.name = sideSign > 0 ? 'HairSide_L' : 'HairSide_R';
+    const effOffX = sideSign > 0 ? sideCfg.offsetX : (cfg.mirrorSides ? -sideCfg.offsetX : sideCfg.offsetX);
+    sideGroup.position.set(effOffX, sideCfg.offsetY, sideCfg.offsetZ);
+
+    // Scale side around its own crown-side pivot so scaling doesn't cross over the center part
+    const pivotX = partX + sideSign * (halfPartGap + rx * 0.32);
+    const pivotY = -ry * 0.18;
+    const pivotGroup = new THREE.Group();
+    pivotGroup.position.set(pivotX, pivotY, 0);
+    pivotGroup.scale.setScalar(THREE.MathUtils.clamp(sideCfg.scale, 0.45, 1.9));
+    const inner = new THREE.Group();
+    inner.position.set(-pivotX, -pivotY, 0);
+    pivotGroup.add(inner);
+    sideGroup.add(pivotGroup);
+    scaleGroup.add(sideGroup);
+
+    const hug = sideCfg.skinHug;
+    const full = THREE.MathUtils.clamp(sideCfg.fullness, 0.35, 2.2);
+    const flat = THREE.MathUtils.clamp(sideCfg.flatness, 0.35, 1.9);
+    const len = THREE.MathUtils.clamp(sideCfg.length, 0.18, 2.4);
+    const spike = THREE.MathUtils.clamp(sideCfg.spikiness, 0, 1);
+    const puff = THREE.MathUtils.clamp(sideCfg.puffiness, 0, 1);
+    const pScale = THREE.MathUtils.clamp(sideCfg.puffScale, 0.35, 2.1);
+    const flare = THREE.MathUtils.clamp(sideCfg.flare, -1, 1);
+    const bangs = THREE.MathUtils.clamp(sideCfg.bangsDrop, 0, 1);
+
+    const partRootX = partX + sideSign * Math.max(0.002, halfPartGap);
+    const lockR = r * 0.16 * full;
+    // Offset centerline by roughly half ribbon thickness so hair sits flush outside scalp curve
+    const surfaceOffset = hug + lockR * 0.46;
+    const drapeDrop = r * (0.18 + len * 1.15);
+
+    // 1. AFRO DUAL-SIDE PUFF CLOUD LAYOUT
+    if (cfg.layout === 'afroSides') {
+      const puffBaseR = r * 0.24 * pScale * (0.72 + full * 0.28);
+      const puffCountPhi = 4;
+      const puffCountAz = 6;
+      for (let pi = 0; pi < puffCountPhi; pi++) {
+        const pf = pi / (puffCountPhi - 1);
+        const phi = THREE.MathUtils.lerp(0.16, 1.28 + Math.min(0.45, (len - 0.7) * 0.35), pf);
+        for (let ai = 0; ai < puffCountAz; ai++) {
+          const af = ai / (puffCountAz - 1);
+          const azStart = THREE.MathUtils.lerp(0.58, 0.24, bangs) + af * (Math.PI - THREE.MathUtils.lerp(0.58, 0.24, bangs));
+          const seed = hashInt01((pi * 31 + ai * 17) * (sideSign > 0 ? 3 : 7) + 19);
+          const { point: p } = sampleHeadSurface(sideSign, phi, azStart, hug + puffBaseR * 0.48 + (seed - 0.5) * 0.014, flat);
+          // Enforce strictly on side of part line
+          const minX = partRootX + sideSign * puffBaseR * 0.38;
+          if (sideSign > 0 ? p.x < minX : p.x > minX) {
+            p.x = minX;
+          }
+          if (pf > 0.55) {
+            p.x += sideSign * flare * 0.03 * pf;
+            p.y -= Math.max(0, len - 0.75) * r * 0.42 * (pf - 0.5);
+          }
+          const pr = puffBaseR * (0.76 + seed * 0.36) * (1 - pf * 0.12);
+          const geo = new THREE.SphereGeometry(pr, 11, 9);
+          const m = new THREE.Mesh(geo, hairMat);
+          m.position.copy(p);
+          m.scale.set(1.06, THREE.MathUtils.clamp(0.75 + flat * 0.2, 0.6, 1.3), 1.02);
+          m.castShadow = true;
+          m.receiveShadow = true;
+          inner.add(m);
+        }
+      }
+    } else {
+      // 2. PARTED LOCKS / SPIKY LOCKS BASE (anchored directly onto the SDF head surface)
+      const isShortStyle = len < 0.65;
+      // A) Crown & Side Drape Locks (9 overlapping ribbon locks fanning from temple -> ear -> occiput)
+      const sideLockCount = 9;
+      for (let i = 0; i < sideLockCount; i++) {
+        const f = i / (sideLockCount - 1);
+        const az = THREE.MathUtils.lerp(0.56, Math.PI * 0.96, f);
+        const hSeed = hashInt01(i * 41 + 11);
+
+        const zFrac = Math.cos(az) * 0.72;
+        const pRoot = samplePartLineSurface(
+          partRootX + sideSign * (0.003 + f * 0.005),
+          zFrac,
+          surfaceOffset + 0.004,
+          flat
+        ).point;
+
+        const pUpper = sampleHeadSurface(sideSign, 0.4, az, surfaceOffset + 0.006, flat).point;
+        pUpper.x = sideSign > 0 ? Math.max(partRootX + 0.01, pUpper.x) : Math.min(partRootX - 0.01, pUpper.x);
+
+        const pCrownSide = sampleHeadSurface(sideSign, 0.78, az, surfaceOffset + 0.005 + spike * 0.008, flat).point;
+
+        let lockPts: THREE.Vector3[];
+        let pTip: THREE.Vector3;
+
+        if (isShortStyle) {
+          // Short haircuts hug the real skull down to the temple/ear/nape hairline
+          const tipPhi = THREE.MathUtils.lerp(0.98, 1.44, (len - 0.18) / 0.47) + f * 0.1;
+          const pMidLow = sampleHeadSurface(sideSign, (0.78 + tipPhi) * 0.5, az, surfaceOffset + 0.004, flat).point;
+          const tipHit = sampleHeadSurface(
+            sideSign,
+            tipPhi,
+            az,
+            surfaceOffset + Math.max(0, flare) * 0.025 + spike * 0.032 * (0.4 + hSeed * 0.6),
+            flat
+          );
+          pTip = tipHit.point;
+          pTip.addScaledVector(tipHit.normal, flare * 0.018);
+          lockPts = [pRoot, pUpper, pCrownSide, pMidLow, pTip];
+        } else {
+          // Medium / Long styles hug down past temples, then drape downward with controlled flare
+          const templeHit = sampleHeadSurface(sideSign, 1.18, az, surfaceOffset + 0.008 + spike * 0.012, flat);
+          const pTemple = templeHit.point;
+          const extraDrop = Math.max(0.03, drapeDrop - r * 0.35) * (0.82 + Math.sin(f * Math.PI) * 0.18 + (hSeed - 0.5) * 0.1);
+          const flareDist = flare * 0.048 + spike * 0.042 * (0.4 + hSeed * 0.6);
+          const horizOut = new THREE.Vector3(templeHit.normal.x, 0, templeHit.normal.z);
+          if (horizOut.lengthSq() > 1e-4) horizOut.normalize();
+
+          const pMidDrop = pTemple
+            .clone()
+            .add(new THREE.Vector3(0, -extraDrop * 0.5, 0))
+            .addScaledVector(horizOut, flareDist * 0.45);
+          pTip = pTemple
+            .clone()
+            .add(new THREE.Vector3(0, -extraDrop, 0))
+            .addScaledVector(horizOut, flareDist);
+          lockPts = [pRoot, pUpper, pCrownSide, pTemple, pMidDrop, pTip];
+        }
+
+        addLockMesh(
+          inner,
+          lockPts,
+          lockR * 0.88,
+          lockR * 1.08,
+          lockR * (0.46 - spike * 0.24),
+          THREE.MathUtils.clamp(0.46 + full * 0.06, 0.38, 0.72),
+          spike
+        );
+
+        // End curls or flipped bob curls at lock tips
+        if (cfg.detailStyle === 'endCurls' && i >= 1) {
+          const outDir = new THREE.Vector3(pTip.x, 0, pTip.z).normalize();
+          const curlR = r * 0.13 * cfg.detailScale * (0.75 + hSeed * 0.35);
+          const curlGeo = createSpiralCurlGeometry(
+            pTip.clone().add(new THREE.Vector3(0, 0.01 + cfg.detailOffsetY, 0)),
+            outDir,
+            curlR,
+            r * (0.28 + cfg.detailCurl * 0.16) * cfg.detailScale,
+            1.1 + cfg.detailCurl * 0.9,
+            lockR * 0.5 * cfg.detailScale
+          );
+          const curlMesh = new THREE.Mesh(curlGeo, hairMat);
+          curlMesh.castShadow = true;
+          inner.add(curlMesh);
+        } else if (cfg.detailStyle === 'bobFlip' && i <= 7) {
+          const outDir = new THREE.Vector3(pTip.x, 0, pTip.z).normalize();
+          const fScale = cfg.detailScale;
+          const flipPts = [
+            pTip.clone().add(new THREE.Vector3(0, 0.014 + cfg.detailOffsetY, 0)),
+            pTip.clone().addScaledVector(outDir, 0.032 * fScale).add(new THREE.Vector3(0, -0.008 * cfg.detailCurl + cfg.detailOffsetY, 0)),
+            pTip.clone().addScaledVector(outDir, 0.064 * fScale).add(new THREE.Vector3(0, 0.02 * cfg.detailCurl + cfg.detailOffsetY, 0)),
+            pTip.clone().addScaledVector(outDir, 0.052 * fScale).add(new THREE.Vector3(0, 0.044 * cfg.detailCurl + cfg.detailOffsetY, 0)),
+          ];
+          addLockMesh(inner, flipPts, lockR * 0.68, lockR * 0.62, lockR * 0.22, 0.62, 0.18);
+        }
+      }
+
+      // B) Front Hairline / Bangs Locks (5 arched locks from high hairline at 0 down just over brow/upper eyes at 1)
+      const bangCount = 5;
+      const bangFloorY = THREE.MathUtils.lerp(
+        eyeCenterY + eyeRadius * 1.55,
+        eyeCenterY + eyeRadius * 0.2,
+        bangs
       );
-    }
-  } else if (style === 'sidePart') {
-    addCap(0.6, -r * 0.36);
-    // Voluminous swept side wave across brow
-    for (let i = 0; i < 5; i++) {
-      const f = i / 4;
-      const sx = -r * 0.42 + f * r * 0.55;
-      addStrand(
-        [
-          new THREE.Vector3(sx, r * 0.42, rz * 0.18),
-          new THREE.Vector3(sx + r * 0.38, r * 0.34 - f * 0.02, rz * 0.65),
-          new THREE.Vector3(sx + r * 0.66, r * 0.06, rz * 0.72),
-        ],
-        0.036 - f * 0.004,
-        0.014
-      );
-    }
-  } else if (style === 'pompadour') {
-    addCap(0.54, -r * 0.4);
-    // High rolled pompadour crest
-    const pompGeo = new THREE.CapsuleGeometry(r * 0.42, r * 0.85, 8, 14);
-    pompGeo.rotateX(Math.PI * 0.36);
-    const pomp = new THREE.Mesh(pompGeo, hairMat);
-    pomp.scale.set(0.95, 1.05, 1.15);
-    pomp.position.set(0, r * 0.46, rz * 0.38);
-    pomp.castShadow = true;
-    scaleGroup.add(pomp);
-    // Swept back ridge
-    const backCrest = new THREE.Mesh(new THREE.SphereGeometry(r * 0.44, 14, 10), hairMat);
-    backCrest.scale.set(0.88, 0.85, 1.25);
-    backCrest.position.set(0, r * 0.38, -rz * 0.15);
-    scaleGroup.add(backCrest);
-  } else if (style === 'messySpiky') {
-    addCap(0.58, -r * 0.36);
-    const spikeDirs = [
-      [0, 0.17, 0.06],
-      [-0.08, 0.14, 0.08],
-      [0.08, 0.14, 0.08],
-      [-0.12, 0.1, 0.02],
-      [0.12, 0.1, 0.02],
-      [-0.07, 0.15, -0.06],
-      [0.07, 0.15, -0.06],
-      [0, 0.13, -0.11],
-      [-0.1, 0.06, 0.1],
-      [0.1, 0.06, 0.1],
-    ];
-    for (const [dx, dy, dz] of spikeDirs) {
-      const base = new THREE.Vector3(dx * 0.45, r * 0.15, dz * 0.45);
-      const mid = base.clone().add(new THREE.Vector3(dx * 0.55, dy * 0.65, dz * 0.55));
-      const tip = base.clone().add(new THREE.Vector3(dx * 1.1, dy * 1.05, dz * 1.1));
-      addStrand([base, mid, tip], 0.036, 0.005);
-    }
-  } else if (style === 'undercut') {
-    addCap(0.5, -r * 0.42);
-    for (let i = -2; i <= 2; i++) {
-      const x = i * r * 0.24;
-      addStrand(
-        [
-          new THREE.Vector3(x * 0.6, r * 0.32, -rz * 0.35),
-          new THREE.Vector3(x * 0.8 + 0.02, r * 0.5, rz * 0.1),
-          new THREE.Vector3(x * 0.9 + 0.04, r * 0.36, rz * 0.72),
-        ],
-        0.042,
-        0.015
-      );
-    }
-  } else if (style === 'surferCurtains') {
-    addCap(0.6, -r * 0.35);
-    ([-1, 1] as const).forEach((side) => {
-      for (let i = 0; i < 3; i++) {
-        const zOff = (i - 1) * rz * 0.32;
-        addStrand(
-          [
-            new THREE.Vector3(side * 0.02, r * 0.4, zOff + rz * 0.12),
-            new THREE.Vector3(side * r * 0.88, r * 0.12, zOff + rz * 0.42),
-            new THREE.Vector3(side * r * 1.06, -r * 0.72, zOff + rz * 0.25),
-            new THREE.Vector3(side * r * 0.92, -r * 1.15, zOff - rz * 0.08),
-          ],
-          0.036,
-          0.014
+      const browForwardLift = surfaceOffset + 0.007 + bangs * 0.011;
+      for (let b = 0; b < bangCount; b++) {
+        const bf = b / (bangCount - 1);
+        const bSeed = hashInt01(b * 23 + 5);
+        const pStart = samplePartLineSurface(
+          partRootX + sideSign * (0.003 + bf * 0.008),
+          THREE.MathUtils.lerp(0.62, 0.22, bf),
+          surfaceOffset + 0.004,
+          flat
+        ).point;
+
+        const sweepAz = THREE.MathUtils.lerp(0.14 + halfPartGap * 1.2, 0.68, bf);
+        const midPhi = THREE.MathUtils.lerp(0.28, 0.72, bangs);
+        let dropPhi =
+          THREE.MathUtils.lerp(0.36, 1.18 + Math.min(0.18, len * 0.08), bangs) + bf * 0.08;
+
+        const pArch = sampleHeadSurface(
+          sideSign,
+          midPhi * 0.62,
+          sweepAz * 0.72,
+          surfaceOffset + 0.007,
+          flat
+        ).point;
+        pArch.x =
+          sideSign > 0 ? Math.max(partRootX + 0.006, pArch.x) : Math.min(partRootX - 0.006, pArch.x);
+
+        let tipHit = sampleHeadSurface(
+          sideSign,
+          dropPhi,
+          sweepAz,
+          browForwardLift + Math.max(0, flare) * 0.015 + spike * 0.016,
+          flat
+        );
+        // Gently stop bangs just over the brow / upper eye rim at max drop instead of slicing over pupils
+        if (Math.abs(tipHit.point.x) < eyeSpacing + eyeRadius * 1.15 && tipHit.point.y < bangFloorY) {
+          for (let step = 0; step < 4; step++) {
+            dropPhi *= 0.84;
+            tipHit = sampleHeadSurface(
+              sideSign,
+              dropPhi,
+              sweepAz,
+              browForwardLift + Math.max(0, flare) * 0.015 + spike * 0.016,
+              flat
+            );
+            if (tipHit.point.y >= bangFloorY) break;
+          }
+        }
+        const pMid = sampleHeadSurface(
+          sideSign,
+          (midPhi * 0.62 + dropPhi) * 0.55,
+          sweepAz * 0.9,
+          browForwardLift,
+          flat
+        ).point;
+        const pTip = tipHit.point;
+        pTip.x += sideSign * ((1 - bangs) * 0.014 + bf * 0.012);
+        pTip.z += 0.006 + bangs * 0.008 + spike * 0.012 * bSeed;
+
+        addLockMesh(
+          inner,
+          [pStart, pArch, pMid, pTip],
+          lockR * 0.78,
+          lockR * 0.94,
+          lockR * (0.38 - spike * 0.18),
+          0.46,
+          Math.max(0.06, spike * 0.8)
         );
       }
-    });
-  } else if (style === 'longStraight') {
-    addCap(0.68, -r * 0.32);
-    // Sleek back veil draping past shoulders
-    for (let i = -3; i <= 3; i++) {
-      const x = i * r * 0.32;
-      const depthCurve = Math.sqrt(Math.max(0.1, 1 - (i / 3.6) ** 2));
-      addStrand(
-        [
-          new THREE.Vector3(x * 0.7, r * 0.25, -rz * 0.35 * depthCurve),
-          new THREE.Vector3(x * 0.98, -r * 0.55, -rz * 0.96 * depthCurve),
-          new THREE.Vector3(x * 1.05, -r * 1.65, -rz * 1.05 * depthCurve),
-          new THREE.Vector3(x * 1.02, -r * 2.45, -rz * 0.98 * depthCurve),
-        ],
-        0.044,
-        0.024
-      );
+
+      // C) Back Nape Locks (4 overlapping ribbon locks hugging the rear skull & nape)
+      const backCount = 4;
+      for (let k = 0; k < backCount; k++) {
+        const kf = k / (backCount - 1);
+        const az = THREE.MathUtils.lerp(Math.PI * 0.74, Math.PI * 0.99, kf);
+        const pRoot = samplePartLineSurface(
+          partRootX + sideSign * (0.004 + (1 - kf) * 0.01),
+          -THREE.MathUtils.lerp(0.32, 0.72, kf),
+          surfaceOffset + 0.004,
+          flat
+        ).point;
+        const pUpperBack = sampleHeadSurface(sideSign, 0.68, az, surfaceOffset + 0.005, flat).point;
+        const backMidHit = sampleHeadSurface(sideSign, 1.24, az, surfaceOffset + 0.006, flat);
+        const pBackMid = backMidHit.point;
+        pBackMid.x = sideSign > 0
+          ? Math.max(partRootX + (1 - kf) * 0.008, pBackMid.x)
+          : Math.min(partRootX - (1 - kf) * 0.008, pBackMid.x);
+
+        let lockPts: THREE.Vector3[];
+        let pTip: THREE.Vector3;
+
+        if (isShortStyle) {
+          const napePhi = THREE.MathUtils.lerp(1.38, 1.72, (len - 0.18) / 0.47);
+          const napeHit = sampleHeadSurface(sideSign, napePhi, az, surfaceOffset + Math.max(0, flare) * 0.018, flat);
+          pTip = napeHit.point;
+          lockPts = [pRoot, pUpperBack, pBackMid, pTip];
+        } else {
+          const extraDrop = Math.max(0.03, drapeDrop - r * 0.32) * (0.88 + (1 - kf) * 0.1);
+          const pBackLow = pBackMid
+            .clone()
+            .add(new THREE.Vector3(0, -extraDrop * 0.55, -0.008 - flare * 0.015));
+          pTip = pBackMid
+            .clone()
+            .add(new THREE.Vector3(sideSign * flare * 0.018, -extraDrop, -0.014 - flare * 0.034 - spike * 0.025));
+          lockPts = [pRoot, pUpperBack, pBackMid, pBackLow, pTip];
+        }
+
+        addLockMesh(
+          inner,
+          lockPts,
+          lockR * 0.9,
+          lockR * 1.08,
+          lockR * (0.48 - spike * 0.24),
+          0.5,
+          spike
+        );
+
+        if (cfg.detailStyle === 'endCurls' && k < 3) {
+          const outDir = new THREE.Vector3(pTip.x * 0.35, 0, -1).normalize();
+          const curlGeo = createSpiralCurlGeometry(
+            pTip.clone().add(new THREE.Vector3(0, 0.01 + cfg.detailOffsetY, 0)),
+            outDir,
+            r * 0.12 * cfg.detailScale,
+            r * (0.26 + cfg.detailCurl * 0.15) * cfg.detailScale,
+            1.1 + cfg.detailCurl * 0.8,
+            lockR * 0.48 * cfg.detailScale
+          );
+          inner.add(new THREE.Mesh(curlGeo, hairMat));
+        }
+      }
+
+      // D) Extra Dynamic Spike Tufts when spikySides or spikiness > 0.35
+      if (cfg.layout === 'spikySides' || spike > 0.35) {
+        const spikeCount = cfg.layout === 'spikySides' ? 6 : 4;
+        const sStrength = cfg.layout === 'spikySides' ? Math.max(0.45, spike) : spike;
+        for (let sp = 0; sp < spikeCount; sp++) {
+          const sf = sp / (spikeCount - 1);
+          const az = THREE.MathUtils.lerp(0.35, Math.PI * 0.88, sf);
+          const phi = 0.34 + (sp % 2) * 0.32;
+          const baseHit = sampleHeadSurface(sideSign, phi, az, surfaceOffset * 0.85, flat);
+          const pBase = baseHit.point;
+          pBase.x = sideSign > 0 ? Math.max(partRootX + 0.01, pBase.x) : Math.min(partRootX - 0.01, pBase.x);
+          const outN = baseHit.normal.clone().lerp(new THREE.Vector3(0, 0.35, -0.25).normalize(), 0.2).normalize();
+          const spikeLen = r * (0.38 + len * 0.34) * sStrength;
+          const pMid = pBase.clone().addScaledVector(outN, spikeLen * 0.52);
+          const pEnd = pBase.clone().addScaledVector(outN, spikeLen).add(new THREE.Vector3(sideSign * flare * 0.018, 0.015 * flat, 0));
+          addLockMesh(inner, [pBase, pMid, pEnd], lockR * 0.88, lockR * 0.68, 0.004, 0.75, 0.95);
+        }
+      }
+
+      // E) Individual Smaller Curly Puffs Overlay ("puffier with individual smaller puffs")
+      if (puff > 0.05) {
+        const puffCount = Math.round(6 + puff * 12);
+        const puffRBase = r * 0.145 * pScale * (0.65 + puff * 0.45) * (0.75 + full * 0.25);
+        for (let pi = 0; pi < puffCount; pi++) {
+          const pf = pi / Math.max(1, puffCount - 1);
+          const h1 = hashInt01(pi * 53 + (sideSign > 0 ? 7 : 13));
+          const h2 = hashInt01(pi * 79 + 3);
+          const phi = THREE.MathUtils.lerp(0.18, 1.2 + Math.min(0.35, (len - 0.5) * 0.22), h1);
+          const az = THREE.MathUtils.lerp(0.3 + (1 - bangs) * 0.22, Math.PI * 0.95, pf);
+          const hit = sampleHeadSurface(sideSign, phi, az, hug + puffRBase * 0.48 + puff * 0.012, flat);
+          const pt = hit.point;
+          const minX = partRootX + sideSign * puffRBase * 0.48;
+          if (sideSign > 0 ? pt.x < minX : pt.x > minX) pt.x = minX;
+          if (phi > 0.9) pt.y -= Math.max(0, len - 0.6) * r * 0.38 * h2;
+          const rad = puffRBase * (0.68 + h2 * 0.52);
+          const puffMesh = new THREE.Mesh(new THREE.SphereGeometry(rad, 9, 8), hairMat);
+          puffMesh.position.copy(pt);
+          puffMesh.scale.set(1.05, 0.92, 1.0);
+          puffMesh.castShadow = true;
+          inner.add(puffMesh);
+        }
+      }
     }
-    // Face-framing front locks + soft bangs
-    ([-1, 1] as const).forEach((side) => {
-      addStrand(
+
+    // F) Side-mounted Details: Pigtails & Twin Space Buns
+    if (cfg.detailStyle === 'pigtails') {
+      const ds = cfg.detailScale;
+      const anchor = sampleHeadSurface(sideSign, 1.15, Math.PI * 0.62, hug + 0.016, flat).point;
+      anchor.y += cfg.detailOffsetY;
+      const tie = new THREE.Mesh(new THREE.TorusGeometry(0.032 * ds, 0.011 * ds, 8, 16), accentMat);
+      tie.position.copy(anchor);
+      tie.rotation.y = sideSign * 0.72;
+      inner.add(tie);
+
+      const tailPts = [
+        anchor.clone(),
+        anchor.clone().add(new THREE.Vector3(sideSign * 0.065 * ds, -0.02 * ds, -0.018 * ds)),
+        anchor.clone().add(new THREE.Vector3(sideSign * 0.095 * ds, -0.14 * ds * (0.7 + len * 0.35), -0.03 * ds)),
+        anchor.clone().add(new THREE.Vector3(sideSign * (0.075 + 0.035 * cfg.detailCurl) * ds, -0.24 * ds * (0.7 + len * 0.35), 0.01 * ds)),
+      ];
+      addLockMesh(inner, tailPts, 0.042 * ds, 0.048 * ds, 0.014 * ds, 0.82, 0.15);
+      if (cfg.detailCurl > 0.25) {
+        const tipPt = tailPts[tailPts.length - 1];
+        const curlGeo = createSpiralCurlGeometry(
+          tipPt,
+          new THREE.Vector3(sideSign * 0.6, 0, 0.8).normalize(),
+          0.022 * ds * cfg.detailCurl,
+          0.055 * ds,
+          1.2 * cfg.detailCurl,
+          0.016 * ds
+        );
+        inner.add(new THREE.Mesh(curlGeo, hairMat));
+      }
+    } else if (cfg.detailStyle === 'twinBuns') {
+      const ds = cfg.detailScale;
+      const bunAnchor = sampleHeadSurface(sideSign, 0.68, Math.PI * 0.56, hug + 0.015, flat).point;
+      bunAnchor.y += cfg.detailOffsetY;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.042 * ds, 0.011 * ds, 8, 16), accentMat);
+      ring.position.copy(bunAnchor);
+      ring.rotation.x = Math.PI * 0.45;
+      ring.rotation.y = sideSign * 0.45;
+      inner.add(ring);
+      const bun = new THREE.Mesh(new THREE.SphereGeometry(r * 0.38 * ds, 14, 12), hairMat);
+      bun.position.copy(bunAnchor).add(new THREE.Vector3(sideSign * 0.018 * ds, 0.026 * ds, -0.01 * ds));
+      bun.scale.set(1.05, 0.9, 1.05);
+      bun.castShadow = true;
+      inner.add(bun);
+    }
+  };
+
+  // Layout dispatcher
+  if (cfg.layout === 'crest') {
+    if (doc.hairStyle === 'curlSwirl') {
+      addLockMesh(
+        scaleGroup,
         [
-          new THREE.Vector3(side * r * 0.55, r * 0.25, rz * 0.58),
-          new THREE.Vector3(side * r * 0.98, -r * 0.45, rz * 0.56),
-          new THREE.Vector3(side * r * 0.92, -r * 1.45, rz * 0.44),
+          new THREE.Vector3(0, -0.005, 0),
+          new THREE.Vector3(0, 0.1, 0.04),
+          new THREE.Vector3(0, 0.14, 0.11),
+          new THREE.Vector3(0, 0.09, 0.13),
         ],
+        0.048,
+        0.042,
+        0.012,
+        0.85,
+        0.05
+      );
+    } else if (doc.hairStyle === 'featherTuft') {
+      ([-0.035, 0, 0.035] as const).forEach((xOff, idx) => {
+        addLockMesh(
+          scaleGroup,
+          [
+            new THREE.Vector3(xOff * 0.4, -0.005, 0.02 - idx * 0.015),
+            new THREE.Vector3(xOff * 0.85, 0.11 - Math.abs(idx - 1) * 0.025, -0.04),
+          ],
+          0.026,
+          0.02,
+          0.005,
+          0.65,
+          0.8
+        );
+      });
+    } else if (doc.hairStyle === 'horseMane') {
+      addLockMesh(
+        scaleGroup,
+        [
+          new THREE.Vector3(0, 0.01, 0.02),
+          new THREE.Vector3(0, 0.06, 0.09),
+          new THREE.Vector3(0, 0.03, 0.14),
+        ],
+        0.038,
         0.032,
-        0.014
+        0.01,
+        0.65,
+        0.4
       );
-    });
-  } else if (style === 'bobCut') {
-    addCap(0.7, -r * 0.34);
-    for (let i = -3; i <= 3; i++) {
-      const a = Math.PI * 0.18 + ((i + 3) / 6) * Math.PI * 1.64;
-      const sx = Math.sin(a) * r * 0.95;
-      const sz = -Math.cos(a) * rz * 0.95;
-      addStrand(
-        [
-          new THREE.Vector3(sx * 0.6, r * 0.2, sz * 0.6),
-          new THREE.Vector3(sx * 1.12, -r * 0.38, sz * 1.12),
-          new THREE.Vector3(sx * 0.96, -r * 0.88, sz * 0.96),
-        ],
-        0.042,
-        0.022
-      );
+      for (let i = 0; i < 6; i++) {
+        const f = i / 5;
+        const backHit = sampleHeadSurface(1, 0.7 + f * 0.95, Math.PI, 0.015, 1.0);
+        addLockMesh(
+          scaleGroup,
+          [
+            backHit.point.clone().setX(0),
+            backHit.point.clone().setX(0).add(new THREE.Vector3(0, 0.04, -0.06)),
+            backHit.point.clone().setX(0).add(new THREE.Vector3(0, 0.0, -0.11)),
+          ],
+          0.042,
+          0.035,
+          0.012,
+          0.55,
+          0.45
+        );
+      }
+    } else {
+      // Mohawk / Crest
+      const spCount = 5;
+      const crestFlat = cfg.left.flatness;
+      const crestLen = cfg.left.length;
+      for (let i = 0; i < spCount; i++) {
+        const zFrac = 0.7 - (i / (spCount - 1)) * 1.45;
+        const root = samplePartLineSurface(0, zFrac, 0.005, crestFlat);
+        addLockMesh(
+          scaleGroup,
+          [
+            root.point.clone(),
+            root.point.clone().addScaledVector(root.normal, (0.08 + crestLen * 0.08) * crestFlat),
+            root.point.clone().addScaledVector(root.normal, (0.14 + crestLen * 0.11) * crestFlat).add(new THREE.Vector3(0, 0, -0.02)),
+          ],
+          0.04 * cfg.left.fullness,
+          0.032 * cfg.left.fullness,
+          0.005,
+          0.48,
+          Math.max(0.5, cfg.left.spikiness)
+        );
+      }
     }
-    // Smooth fringe
-    for (let i = -2; i <= 2; i++) {
-      addStrand(
-        [
-          new THREE.Vector3(i * r * 0.24, r * 0.34, rz * 0.5),
-          new THREE.Vector3(i * r * 0.28, r * 0.04, rz * 0.95),
-        ],
-        0.028,
-        0.016
-      );
-    }
-  } else if (style === 'wavyShoulder') {
-    addCap(0.68, -r * 0.32);
-    for (let i = -3; i <= 3; i++) {
-      const x = i * r * 0.32;
-      const phase = i * 0.6;
-      addStrand(
-        [
-          new THREE.Vector3(x * 0.65, r * 0.22, -rz * 0.25),
-          new THREE.Vector3(x * 1.05 + Math.sin(phase) * 0.02, -r * 0.35, -rz * 0.95),
-          new THREE.Vector3(x * 1.14 - Math.sin(phase) * 0.025, -r * 0.95, -rz * 0.88),
-          new THREE.Vector3(x * 1.06 + Math.sin(phase) * 0.03, -r * 1.62, -rz * 1.02),
-        ],
-        0.042,
-        0.018
-      );
-    }
-    ([-1, 1] as const).forEach((side) => {
-      addStrand(
-        [
-          new THREE.Vector3(side * r * 0.62, r * 0.22, rz * 0.5),
-          new THREE.Vector3(side * r * 1.06, -r * 0.38, rz * 0.58),
-          new THREE.Vector3(side * r * 0.95, -r * 1.05, rz * 0.35),
-        ],
-        0.032,
-        0.014
-      );
-    });
-  } else if (style === 'twinPigtails') {
-    addCap(0.62, -r * 0.34);
-    ([-1, 1] as const).forEach((side) => {
-      const tie = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.013, 8, 16), accentMat);
-      tie.position.set(side * r * 1.05, r * 0.14, -rz * 0.12);
-      tie.rotation.y = side * 0.7;
-      scaleGroup.add(tie);
-      addStrand(
-        [
-          new THREE.Vector3(side * r * 1.04, r * 0.14, -rz * 0.12),
-          new THREE.Vector3(side * r * 1.48, -r * 0.15, -rz * 0.22),
-          new THREE.Vector3(side * r * 1.56, -r * 0.95, -rz * 0.28),
-          new THREE.Vector3(side * r * 1.38, -r * 1.45, -rz * 0.12),
-        ],
-        0.052,
-        0.018
-      );
-    });
-  } else if (style === 'highBun') {
-    addCap(0.62, -r * 0.35);
-    const band = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.014, 8, 18), accentMat);
-    band.rotation.x = Math.PI * 0.5;
-    band.position.set(0, r * 0.68, -rz * 0.18);
-    scaleGroup.add(band);
-    const bun = new THREE.Mesh(new THREE.SphereGeometry(r * 0.58, 16, 14), hairMat);
-    bun.scale.set(1.05, 0.88, 1.05);
-    bun.position.set(0, r * 0.88, -rz * 0.2);
-    bun.castShadow = true;
-    scaleGroup.add(bun);
-  } else if (style === 'braidedCrown') {
-    addCap(0.64, -r * 0.34);
-    // Woven crown ring of beads circling forehead & sides
-    const links = 16;
-    for (let i = 0; i < links; i++) {
-      const a = (i / links) * Math.PI * 2;
-      const link = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), i % 4 === 0 ? accentMat : hairMat);
-      link.position.set(Math.sin(a) * r * 1.02, r * 0.28 + Math.cos(a) * 0.02, Math.cos(a) * rz * 1.02);
-      link.scale.set(1.15, 0.85, 1.15);
-      scaleGroup.add(link);
-    }
-    // Back plait
-    for (let p = 0; p < 6; p++) {
-      const bead = new THREE.Mesh(new THREE.SphereGeometry(0.036 * (1 - p * 0.1), 10, 8), hairMat);
-      bead.position.set((p % 2 === 0 ? 1 : -1) * 0.012, -r * 0.15 - p * 0.058, -rz * 1.02 - p * 0.012);
-      scaleGroup.add(bead);
-    }
-  } else if (style === 'curlyAfro') {
-    const puffOffsets = [
-      [0, r * 0.32, 0, 1.0],
-      [-r * 0.62, r * 0.18, rz * 0.35, 0.72],
-      [r * 0.62, r * 0.18, rz * 0.35, 0.72],
-      [-r * 0.78, -r * 0.12, -rz * 0.05, 0.74],
-      [r * 0.78, -r * 0.12, -rz * 0.05, 0.74],
-      [-r * 0.56, r * 0.12, -rz * 0.58, 0.76],
-      [r * 0.56, r * 0.12, -rz * 0.58, 0.76],
-      [0, r * 0.02, -rz * 0.76, 0.78],
-      [-r * 0.42, -r * 0.45, -rz * 0.65, 0.66],
-      [r * 0.42, -r * 0.45, -rz * 0.65, 0.66],
-      [0, -r * 0.5, -rz * 0.72, 0.68],
-      [-r * 0.32, r * 0.45, rz * 0.1, 0.68],
-      [r * 0.32, r * 0.45, rz * 0.1, 0.68],
-    ];
-    for (const [px, py, pz, pr] of puffOffsets) {
-      const puff = new THREE.Mesh(new THREE.SphereGeometry(r * 0.62 * pr, 14, 12), hairMat);
-      puff.position.set(px, py, pz);
-      puff.castShadow = true;
-      scaleGroup.add(puff);
-    }
-  } else if (style === 'ponytail') {
-    addCap(0.64, -r * 0.34);
-    const tie = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.012, 8, 14), accentMat);
-    tie.position.set(0, r * 0.2, -rz * 0.96);
-    scaleGroup.add(tie);
-    addStrand(
-      [
-        new THREE.Vector3(0, r * 0.2, -rz * 0.92),
-        new THREE.Vector3(0, r * 0.12, -rz * 1.48),
-        new THREE.Vector3(0, -r * 0.52, -rz * 1.66),
-        new THREE.Vector3(0, -r * 1.15, -rz * 1.45),
-      ],
-      0.056,
-      0.016
-    );
-  } else if (style === 'spikyTufts') {
-    const dirs = [
-      [0, 0.16, 0.06],
-      [0.1, 0.12, 0.03],
-      [-0.1, 0.12, 0.03],
-      [0.06, 0.13, -0.09],
-      [-0.06, 0.13, -0.09],
-    ];
-    for (const [dx, dy, dz] of dirs) {
-      addStrand(
-        [new THREE.Vector3(dx * 0.25, -0.02, dz * 0.25), new THREE.Vector3(dx, dy, dz)],
-        0.044,
-        0.008
-      );
-    }
-  } else if (style === 'mohawk') {
-    for (let i = 0; i < 5; i++) {
-      const z = 0.09 - i * 0.065;
-      addStrand(
-        [new THREE.Vector3(0, -0.02 - i * 0.01, z), new THREE.Vector3(0, 0.14 - i * 0.01, z - 0.04)],
-        0.042,
-        0.008,
-        hairMat,
-        0.55
-      );
-    }
-  } else if (style === 'curlSwirl') {
-    addStrand(
-      [
-        new THREE.Vector3(0, -0.01, 0),
-        new THREE.Vector3(0, 0.1, 0.04),
-        new THREE.Vector3(0, 0.14, 0.11),
-        new THREE.Vector3(0, 0.09, 0.13),
-      ],
-      0.055,
-      0.014
-    );
-  } else if (style === 'mushroomCap') {
-    const dome = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.56),
-      hairMat
-    );
-    dome.scale.set(r * 1.65, r * 0.95, rz * 1.65);
-    dome.position.set(0, -r * 0.15, 0);
-    dome.castShadow = true;
-    scaleGroup.add(dome);
-  } else if (style === 'horseMane') {
-    addStrand(
-      [new THREE.Vector3(0, 0.01, 0.02), new THREE.Vector3(0, 0.05, 0.13)],
-      0.04,
-      0.012
-    );
-    for (let i = 0; i < 5; i++) {
-      const f = i / 4;
-      addStrand(
-        [
-          new THREE.Vector3(0, 0.02 - f * 0.24, -rz * 0.72),
-          new THREE.Vector3(0, 0.05 - f * 0.24, -rz * 1.48),
-        ],
-        0.045,
-        0.016,
-        hairMat,
-        0.58
-      );
-    }
-  } else if (style === 'lionMane') {
+  } else if (cfg.layout === 'mane') {
     const count = 12;
+    const mScale = (cfg.left.fullness + cfg.right.fullness) * 0.5;
+    const mPuff = (cfg.left.puffScale + cfg.right.puffScale) * 0.5;
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2;
-      const puff = new THREE.Mesh(new THREE.SphereGeometry(r * 0.56, 12, 10), hairMat);
-      puff.position.set(Math.sin(a) * r * 1.15, -r * 0.52 + Math.cos(a) * r * 1.05, -rz * 0.15);
+      const hit = sampleHeadSurface(a <= Math.PI ? 1 : -1, Math.min(Math.PI * 0.9, Math.abs(Math.sin(a)) * 1.2 + 0.35), Math.PI * 0.55, cfg.left.skinHug + r * 0.16, cfg.left.flatness);
+      const puff = new THREE.Mesh(
+        new THREE.SphereGeometry(r * 0.5 * mScale * mPuff, 12, 10),
+        hairMat
+      );
+      puff.position.set(
+        Math.sin(a) * r * (1.1 + cfg.left.skinHug),
+        skullCy + Math.cos(a) * r * 1.02 * cfg.left.flatness,
+        Math.min(-0.02, hit.point.z - rz * 0.18)
+      );
       puff.scale.set(1.0, 1.0, 0.85);
       puff.castShadow = true;
       scaleGroup.add(puff);
     }
-  } else if (style === 'featherTuft') {
-    ([-0.035, 0, 0.035] as const).forEach((xOff, idx) => {
-      addStrand(
+  } else {
+    // Dual-side symmetric or asymmetric hair base
+    buildSideHair(1, cfg.left);
+    buildSideHair(-1, cfg.mirrorSides ? cfg.left : cfg.right);
+  }
+
+  // Global Back/Top Details (Ponytail, High Bun, Braided Crown, Pompadour Crest)
+  const ds = cfg.detailScale;
+  const dOffY = cfg.detailOffsetY;
+  if (cfg.detailStyle === 'ponytail') {
+    const tieHit = sampleHeadSurface(1, 1.18, Math.PI, 0.018, 1.0);
+    const tiePos = tieHit.point.clone().setX(0);
+    tiePos.y += dOffY;
+    const tie = new THREE.Mesh(new THREE.TorusGeometry(0.036 * ds, 0.012 * ds, 8, 16), accentMat);
+    tie.position.copy(tiePos);
+    scaleGroup.add(tie);
+
+    for (let j = -1; j <= 1; j++) {
+      const xOff = j * 0.018 * ds;
+      addLockMesh(
+        scaleGroup,
         [
-          new THREE.Vector3(xOff * 0.4, -0.01, 0.02 - idx * 0.015),
-          new THREE.Vector3(xOff * 0.85, 0.11 - Math.abs(idx - 1) * 0.025, -0.04),
+          tiePos.clone().add(new THREE.Vector3(xOff * 0.3, 0, 0.02)),
+          tiePos.clone().add(new THREE.Vector3(xOff, -0.02 * ds, -0.075 * ds)),
+          tiePos.clone().add(new THREE.Vector3(xOff * 1.15, -0.14 * ds, -0.11 * ds)),
+          tiePos.clone().add(new THREE.Vector3(xOff * 0.9, -0.26 * ds, -0.06 * ds + 0.03 * cfg.detailCurl * ds)),
         ],
-        0.026,
-        0.008,
-        hairMat,
-        0.75
+        0.034 * ds,
+        0.038 * ds,
+        0.01 * ds,
+        0.72,
+        0.18
       );
-    });
-  } else if (style === 'fluffyBangs') {
-    for (let b = -1; b <= 1; b++) {
-      const puff = new THREE.Mesh(new THREE.SphereGeometry(r * 0.42, 12, 10), hairMat);
-      puff.scale.set(1.05, 0.78, 0.88);
-      puff.position.set(b * r * 0.42, -r * 0.06, rz * 0.72);
-      puff.castShadow = true;
-      scaleGroup.add(puff);
+    }
+  } else if (cfg.detailStyle === 'highBun') {
+    const bunCenter = samplePartLineSurface(0, -0.22, 0.02, 1.0).point;
+    bunCenter.y += dOffY;
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.052 * ds, 0.014 * ds, 8, 18), accentMat);
+    band.rotation.x = Math.PI * 0.5;
+    band.position.copy(bunCenter).add(new THREE.Vector3(0, -0.008 * ds, 0));
+    scaleGroup.add(band);
+
+    const bun = new THREE.Mesh(new THREE.SphereGeometry(r * 0.54 * ds, 16, 14), hairMat);
+    bun.scale.set(1.06, 0.88, 1.06);
+    bun.position.copy(bunCenter).add(new THREE.Vector3(0, 0.032 * ds, 0));
+    bun.castShadow = true;
+    scaleGroup.add(bun);
+  } else if (cfg.detailStyle === 'braidPlait') {
+    const links = 16;
+    for (let i = 0; i < links; i++) {
+      const a = (i / links) * Math.PI * 2;
+      const sideS: 1 | -1 = Math.sin(a) >= 0 ? 1 : -1;
+      const az = Math.atan2(Math.abs(Math.sin(a)), Math.cos(a));
+      const hit = sampleHeadSurface(sideS, 0.82, az, 0.018, 1.0);
+      const link = new THREE.Mesh(
+        new THREE.SphereGeometry(0.028 * ds, 10, 8),
+        i % 4 === 0 ? accentMat : hairMat
+      );
+      link.position.copy(hit.point).add(new THREE.Vector3(0, dOffY, 0));
+      link.scale.set(1.12, 0.85, 1.12);
+      scaleGroup.add(link);
+    }
+    const backHit = sampleHeadSurface(1, 1.35, Math.PI, 0.02, 1.0).point.setX(0);
+    for (let p = 0; p < 6; p++) {
+      const bead = new THREE.Mesh(
+        new THREE.SphereGeometry(0.034 * ds * (1 - p * 0.1), 10, 8),
+        hairMat
+      );
+      bead.position.set(
+        (p % 2 === 0 ? 1 : -1) * 0.011 * ds,
+        backHit.y + dOffY - p * 0.052 * ds,
+        backHit.z - p * 0.012 * ds
+      );
+      scaleGroup.add(bead);
+    }
+  } else if (cfg.detailStyle === 'pompCrest') {
+    for (let i = -1; i <= 1; i++) {
+      const xOff = i * r * 0.22 * ds;
+      const pBack = samplePartLineSurface(xOff * 0.7, -0.25, 0.01, 1.0).point;
+      const pTop = samplePartLineSurface(xOff * 0.9, 0.2, 0.058 * ds, 1.0).point;
+      const pFront = samplePartLineSurface(xOff * 0.85, 0.65, 0.044 * ds, 1.0).point;
+      const pEnd = samplePartLineSurface(xOff * 0.6, 0.85, 0.008, 1.0).point;
+      pBack.y += dOffY;
+      pTop.y += dOffY;
+      pFront.y += dOffY;
+      pEnd.y += dOffY;
+      addLockMesh(
+        scaleGroup,
+        [pBack, pTop, pFront, pEnd],
+        r * 0.26 * ds,
+        r * 0.34 * ds,
+        r * 0.18 * ds,
+        0.72,
+        0.05
+      );
     }
   }
 
@@ -3462,7 +4445,8 @@ function buildLayeredAddons(
 
 export function buildCharacterRigAndMesh(
   doc: CharacterMakerDoc,
-  resolution = 44
+  resolution = 44,
+  includeEditorGuides = false
 ): BuiltCharacterAsset {
   const root = new THREE.Group();
   root.name = 'CharacterRoot';
@@ -3481,8 +4465,22 @@ export function buildCharacterRigAndMesh(
   const spineBaseY = hipY + doc.hips.length * 0.55;
   const chestY = spineBaseY + doc.belly.length * 0.88;
   const shoulderY = chestY + doc.torso.length * 0.68;
-  const neckBaseY = chestY + doc.torso.length * 0.92;
-  const headCenterY = neckBaseY + doc.neck.length + doc.head.length * 0.38;
+  const torsoSpineTopY =
+    chestY + Math.max(0.025, doc.torso.length * 0.88 - doc.torso.endRadius * 0.62);
+  const shoulderBridgeR = Math.min(doc.torso.midRadius * 0.62, doc.torso.endRadius * 0.88);
+  const shoulderBridgeTopY =
+    doc.shoulderWidth > 0.14 ? shoulderY - 0.008 + shoulderBridgeR : chestY;
+  const collarTopY = Math.max(torsoSpineTopY + doc.torso.endRadius, shoulderBridgeTopY);
+  const neckBaseY = collarTopY - 0.012;
+  const neckTopY = neckBaseY + doc.neck.length;
+  const headSkullEmbed = Math.min(
+    0.036,
+    doc.head.startRadius * 0.25,
+    Math.max(0.012, doc.neck.length * 0.38)
+  );
+  const headBotY = neckTopY - headSkullEmbed + doc.head.startRadius;
+  const headTopY = headBotY + doc.head.length * 0.65;
+  const headCenterY = (headBotY + headTopY) * 0.5;
 
   const hipX = doc.legStanceWidth;
   const shoulderX = doc.shoulderWidth;
@@ -3699,6 +4697,7 @@ export function buildCharacterRigAndMesh(
     boneA: hipsB.index,
     boneB: spineB.index,
     boneLerp: 0.45,
+    partKey: 'hips',
   });
 
   // Belly / Lower Torso
@@ -3716,13 +4715,14 @@ export function buildCharacterRigAndMesh(
     boneA: spineB.index,
     boneB: chestB.index,
     boneLerp: 0.55,
+    partKey: 'belly',
   });
 
   // Chest / Upper Torso
   prims.push({
     kind: 'capsule',
     a: [0, chestY, 0],
-    b: [0, neckBaseY, 0],
+    b: [0, torsoSpineTopY, 0],
     oval: [doc.torso.squashX ?? 1.24, doc.torso.squashZ ?? 0.86],
     startRadius: doc.torso.startRadius,
     midRadius: doc.torso.midRadius,
@@ -3732,22 +4732,24 @@ export function buildCharacterRigAndMesh(
     color: hexToRgbTuple(doc.torso.color),
     boneA: chestB.index,
     boneB: neckB.index,
-    boneLerp: 0.25,
+    boneLerp: 0.22,
+    partKey: 'torso',
   });
 
   // Shoulder bridge
   if (doc.shoulderWidth > 0.14) {
     prims.push({
       kind: 'capsule',
-      a: [-shoulderX * 0.72, shoulderY, 0],
-      b: [shoulderX * 0.72, shoulderY, 0],
+      a: [-shoulderX * 0.72, shoulderY - 0.008, 0],
+      b: [shoulderX * 0.72, shoulderY - 0.008, 0],
       startRadius: doc.upperArm.startRadius * 1.1,
-      midRadius: doc.torso.midRadius * 0.72,
+      midRadius: shoulderBridgeR,
       endRadius: doc.upperArm.startRadius * 1.1,
       curvature: 0.08,
-      blendScale: 0.88,
+      blendScale: 0.84,
       color: hexToRgbTuple(doc.torso.color),
       boneA: chestB.index,
+      partKey: 'torso',
     });
   }
 
@@ -3772,6 +4774,7 @@ export function buildCharacterRigAndMesh(
       boneA: spineB.index,
       boneB: chestB.index,
       boneLerp: 0.5,
+      partKey: 'belly',
     });
   }
 
@@ -3789,16 +4792,20 @@ export function buildCharacterRigAndMesh(
       blendScale: 0.95,
       color: hexToRgbTuple(doc.hips.color),
       boneA: hipsB.index,
+      partKey: 'extraLeg',
     });
   }
 
-  // Neck (tight proportional blendScale so slender necks stay genuinely slim without puffing up!)
+  // Neck (dedicated vertical span between collarbone & skull base, with controlled blendScale so chin/jawline stays distinct)
   const neckMinR = Math.min(doc.neck.startRadius, doc.neck.midRadius, doc.neck.endRadius);
-  const neckBlendScale = THREE.MathUtils.clamp(neckMinR / 0.068, 0.2, 0.78);
+  const neckBlendScale = THREE.MathUtils.clamp(neckMinR / 0.095, 0.22, 0.48);
+  const neckRootAnchorY = neckBaseY - Math.min(0.028, doc.neck.startRadius * 0.45);
+  const neckHeadAnchorY = neckTopY + Math.min(0.026, doc.head.startRadius * 0.2);
+  const neckTopZ = doc.headForwardTilt * 0.85 - Math.min(0.026, doc.head.startRadius * 0.18);
   prims.push({
     kind: 'capsule',
-    a: [0, neckBaseY - 0.008, 0],
-    b: [0, neckBaseY + doc.neck.length + 0.014, doc.headForwardTilt * 0.5],
+    a: [0, neckRootAnchorY, 0],
+    b: [0, neckHeadAnchorY, neckTopZ],
     oval: [doc.neck.squashX ?? 1.0, doc.neck.squashZ ?? 1.0],
     startRadius: doc.neck.startRadius,
     midRadius: doc.neck.midRadius,
@@ -3809,11 +4816,11 @@ export function buildCharacterRigAndMesh(
     boneA: neckB.index,
     boneB: headB.index,
     boneLerp: 0.55,
+    partKey: 'neck',
   });
 
   // Head (Main Skull + Crown/Brow Segment + Jaw/Chin Segment)
-  const headBotY = neckBaseY + doc.neck.length + 0.01;
-  const headTopY = headBotY + doc.head.length * 0.65;
+  const headPrimStartIdx = prims.length;
   prims.push({
     kind: 'capsule',
     a: [0, headBotY, doc.headForwardTilt],
@@ -3826,6 +4833,7 @@ export function buildCharacterRigAndMesh(
     blendScale: 0.85,
     color: hexToRgbTuple(doc.head.color),
     boneA: headB.index,
+    partKey: 'head',
   });
 
   // Head Segment 2: Upper Crown / Forehead / Brow Dome
@@ -3844,6 +4852,7 @@ export function buildCharacterRigAndMesh(
     blendScale: crownProf.blendScale,
     color: hexToRgbTuple(crownProf.color || doc.head.color),
     boneA: headB.index,
+    partKey: 'headCrown',
   });
 
   // Head Segment 3: Lower Jaw / Chin / Jowl Sculpt
@@ -3864,7 +4873,9 @@ export function buildCharacterRigAndMesh(
     blendScale: jawProf.blendScale,
     color: hexToRgbTuple(jawProf.color || doc.head.color),
     boneA: headB.index,
+    partKey: 'headJaw',
   });
+  const headSdfPrims = prims.slice(headPrimStartIdx);
 
   // 5-Segment Sculpted Muzzle + Optional Dual Oval Split Cheek Pads (bunny/squirrel/cat)
   const muzzleCfg = ext.muzzle;
@@ -3877,13 +4888,13 @@ export function buildCharacterRigAndMesh(
   const muzzleTiltRad = THREE.MathUtils.degToRad(muzzleCfg.tiltDeg);
   const muzzleDir = new THREE.Vector3(0, -Math.sin(muzzleTiltRad), Math.cos(muzzleTiltRad)).normalize();
   const muzzleEndPt = muzzleStartPt.clone().addScaledVector(muzzleDir, hasMuzzle ? muzzleCfg.length : 0);
+  const muzzlePts: THREE.Vector3[] = [];
 
   if (hasMuzzle) {
     const mCol = hexToRgbTuple(muzzleCfg.color);
     const segs = muzzleCfg.segments;
-    const pts: THREE.Vector3[] = [];
     for (let i = 0; i < 5; i++) {
-      pts.push(muzzleStartPt.clone().addScaledVector(muzzleDir, muzzleCfg.length * (i / 4)));
+      muzzlePts.push(muzzleStartPt.clone().addScaledVector(muzzleDir, muzzleCfg.length * (i / 4)));
     }
     for (let i = 0; i < 4; i++) {
       const sA = segs[i];
@@ -3891,8 +4902,8 @@ export function buildCharacterRigAndMesh(
       const avgOvalX = ((sA.rx / Math.max(0.01, sA.ry)) + (sB.rx / Math.max(0.01, sB.ry))) * 0.5;
       prims.push({
         kind: 'capsule',
-        a: tupleVec(pts[i]),
-        b: tupleVec(pts[i + 1]),
+        a: tupleVec(muzzlePts[i]),
+        b: tupleVec(muzzlePts[i + 1]),
         oval: [THREE.MathUtils.clamp(avgOvalX, 0.45, 2.2), 1.0],
         startRadius: sA.ry,
         midRadius: (sA.ry + sB.ry) * 0.5,
@@ -3901,13 +4912,15 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.44,
         color: mCol,
         boneA: headB.index,
+        partKey: 'muzzle',
+        seamZone: 100 + i,
       });
     }
 
     // Split cheek puffs (bunny / squirrel / cat dual oval sphere lobes + center cleft)
     if (muzzleCfg.splitCleft > 0.05) {
       const endSeg = segs[4];
-      const padCenter = pts[3].clone().lerp(pts[4], 0.62);
+      const padCenter = muzzlePts[3].clone().lerp(muzzlePts[4], 0.62);
       const cleftFrac = THREE.MathUtils.clamp(muzzleCfg.splitCleft, 0, 1);
       const sepX = endSeg.rx * (0.44 + cleftFrac * 0.34);
       const lobeRx = endSeg.rx * (0.58 + cleftFrac * 0.14);
@@ -3925,6 +4938,8 @@ export function buildCharacterRigAndMesh(
           blendScale: 0.28,
           color: mCol,
           boneA: headB.index,
+          partKey: 'muzzle',
+          seamZone: 103,
         });
       });
 
@@ -3958,8 +4973,13 @@ export function buildCharacterRigAndMesh(
     handIdx: number,
     upProf = doc.upperArm,
     loProf = doc.lowerArm,
-    includeHand = true
+    includeHand = true,
+    isExtra = false
   ) => {
+    const upPartKey: CharacterBodyPartKey = isExtra ? 'extraArm' : 'upperArm';
+    const loPartKey: CharacterBodyPartKey = isExtra ? 'extraArm' : 'lowerArm';
+    const handPartKey: CharacterBodyPartKey | undefined = isExtra ? 'extraArm' : undefined;
+    const handSeamZone = isExtra ? undefined : 15;
     prims.push({
       kind: 'capsule',
       a: tupleVec(sh),
@@ -3973,6 +4993,7 @@ export function buildCharacterRigAndMesh(
       boneA: upIdx,
       boneB: loIdx,
       boneLerp: 0.65,
+      partKey: upPartKey,
     });
     prims.push({
       kind: 'capsule',
@@ -3987,6 +5008,7 @@ export function buildCharacterRigAndMesh(
       boneA: loIdx,
       boneB: handIdx,
       boneLerp: 0.45,
+      partKey: loPartKey,
     });
 
     if (!includeHand) return;
@@ -4009,6 +5031,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.45,
         color: handCol,
         boneA: handIdx,
+        partKey: handPartKey,
+        seamZone: handSeamZone,
       });
       return;
     }
@@ -4027,6 +5051,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.3,
         color: tipCol,
         boneA: handIdx,
+        partKey: handPartKey,
+        seamZone: handSeamZone,
       });
       return;
     }
@@ -4045,6 +5071,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.4,
         color: handCol,
         boneA: handIdx,
+        partKey: handPartKey,
+        seamZone: handSeamZone,
       });
       for (let t = -1; t <= 1; t++) {
         const toeBase = pawEnd.clone().add(new THREE.Vector3(0, -0.01 * hs, t * 0.025 * hs));
@@ -4060,6 +5088,8 @@ export function buildCharacterRigAndMesh(
           blendScale: 0.22,
           color: handCol,
           boneA: handIdx,
+          partKey: handPartKey,
+          seamZone: handSeamZone,
         });
       }
       return;
@@ -4078,6 +5108,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.38,
         color: handCol,
         boneA: handIdx,
+        partKey: handPartKey,
+        seamZone: handSeamZone,
       });
       for (let c = -1; c <= 1; c++) {
         const cBase = palmEnd.clone().add(new THREE.Vector3(0, 0, c * 0.026 * hs));
@@ -4101,6 +5133,8 @@ export function buildCharacterRigAndMesh(
             blendScale: 0.2,
             color: tipCol,
             boneA: handIdx,
+            partKey: handPartKey,
+            seamZone: handSeamZone,
           },
           {
             kind: 'capsule',
@@ -4113,6 +5147,8 @@ export function buildCharacterRigAndMesh(
             blendScale: 0.16,
             color: tipCol,
             boneA: handIdx,
+            partKey: handPartKey,
+            seamZone: handSeamZone,
           }
         );
       }
@@ -4142,6 +5178,8 @@ export function buildCharacterRigAndMesh(
       blendScale: 0.34,
       color: handCol,
       boneA: handIdx,
+      partKey: handPartKey,
+      seamZone: handSeamZone,
     });
 
     const thumbBase = wr
@@ -4164,6 +5202,8 @@ export function buildCharacterRigAndMesh(
       blendScale: 0.18,
       color: handCol,
       boneA: handIdx,
+      partKey: handPartKey,
+      seamZone: handSeamZone,
     });
 
     const fanAngle = doc.fingerSpread * 0.55;
@@ -4188,6 +5228,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.16,
         color: handCol,
         boneA: handIdx,
+        partKey: handPartKey,
+        seamZone: handSeamZone,
       });
     }
   };
@@ -4206,6 +5248,7 @@ export function buildCharacterRigAndMesh(
       extraArmPos.lLoIdx,
       doc.extraArmProfile,
       doc.extraArmProfile,
+      true,
       true
     );
     addArmChain(
@@ -4218,6 +5261,7 @@ export function buildCharacterRigAndMesh(
       extraArmPos.rLoIdx,
       doc.extraArmProfile,
       doc.extraArmProfile,
+      true,
       true
     );
   }
@@ -4232,8 +5276,13 @@ export function buildCharacterRigAndMesh(
     loIdx: number,
     footIdx: number,
     upProf = doc.upperLeg,
-    loProf = doc.lowerLeg
+    loProf = doc.lowerLeg,
+    isExtra = false
   ) => {
+    const upPartKey: CharacterBodyPartKey = isExtra ? 'extraLeg' : 'upperLeg';
+    const loPartKey: CharacterBodyPartKey = isExtra ? 'extraLeg' : 'lowerLeg';
+    const footPartKey: CharacterBodyPartKey | undefined = isExtra ? 'extraLeg' : undefined;
+    const footSeamZone = isExtra ? undefined : 16;
     prims.push({
       kind: 'capsule',
       a: tupleVec(hip),
@@ -4247,6 +5296,7 @@ export function buildCharacterRigAndMesh(
       boneA: upIdx,
       boneB: loIdx,
       boneLerp: 0.65,
+      partKey: upPartKey,
     });
     prims.push({
       kind: 'capsule',
@@ -4261,6 +5311,7 @@ export function buildCharacterRigAndMesh(
       boneA: loIdx,
       boneB: footIdx,
       boneLerp: 0.4,
+      partKey: loPartKey,
     });
 
     const fs = doc.footScale;
@@ -4280,6 +5331,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.32,
         color: tipCol,
         boneA: footIdx,
+        partKey: footPartKey,
+        seamZone: footSeamZone,
       });
     } else if (doc.footStyle === 'paw') {
       prims.push({
@@ -4294,6 +5347,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.42,
         color: fCol,
         boneA: footIdx,
+        partKey: footPartKey,
+        seamZone: footSeamZone,
       });
       for (let t = -1; t <= 1; t++) {
         prims.push({
@@ -4307,6 +5362,8 @@ export function buildCharacterRigAndMesh(
           blendScale: 0.2,
           color: fCol,
           boneA: footIdx,
+          partKey: footPartKey,
+          seamZone: footSeamZone,
         });
       }
     } else if (doc.footStyle === 'claw') {
@@ -4322,6 +5379,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.38,
         color: fCol,
         boneA: footIdx,
+        partKey: footPartKey,
+        seamZone: footSeamZone,
       });
       for (let c = -1; c <= 1; c++) {
         prims.push({
@@ -4335,6 +5394,8 @@ export function buildCharacterRigAndMesh(
           blendScale: 0.18,
           color: tipCol,
           boneA: footIdx,
+          partKey: footPartKey,
+          seamZone: footSeamZone,
         });
       }
     } else {
@@ -4350,6 +5411,8 @@ export function buildCharacterRigAndMesh(
         blendScale: 0.42,
         color: fCol,
         boneA: footIdx,
+        partKey: footPartKey,
+        seamZone: footSeamZone,
       });
     }
   };
@@ -4367,7 +5430,8 @@ export function buildCharacterRigAndMesh(
       extraLegPos.lLoIdx,
       extraLegPos.lLoIdx,
       doc.extraLegProfile,
-      doc.extraLegProfile
+      doc.extraLegProfile,
+      true
     );
     addLegChain(
       -1,
@@ -4378,7 +5442,8 @@ export function buildCharacterRigAndMesh(
       extraLegPos.rLoIdx,
       extraLegPos.rLoIdx,
       doc.extraLegProfile,
-      doc.extraLegProfile
+      doc.extraLegProfile,
+      true
     );
   }
 
@@ -5370,9 +6435,25 @@ export function buildCharacterRigAndMesh(
     }
   }
 
+  // Tag any remaining tail/ear/horn/wing/whisker primitives that didn't explicitly set partKey or seamZone
+  const tailStartIdx = prims.findIndex((p) => tailBones.some((tb) => tb.index === p.boneA));
+  for (let i = 0; i < prims.length; i++) {
+    const p = prims[i];
+    if (p.op === 'sub' || p.partKey || p.seamZone !== undefined) continue;
+    if (tailStartIdx >= 0 && tailBones.some((tb) => tb.index === p.boneA)) {
+      p.partKey = 'tail';
+    } else if (p.boneA === headB.index) {
+      // Ears, horns, or whiskers (all have boneA === headB.index and were added after muzzle)
+      p.seamZone = 17;
+    } else if (p.boneA === chestB.index) {
+      // Wings
+      p.seamZone = 19;
+    }
+  }
+
   // 4. Evaluate SDF & Polygonize Seamless Clay Mesh via Marching Cubes
   const evaluator = new SdfFieldEvaluator(prims, doc.blendSmoothness);
-  const mcResult = polygonizeSdfToGeometry(evaluator, bones.length, resolution);
+  const mcResult = polygonizeSdfToGeometry(evaluator, bones.length, resolution, includeEditorGuides);
 
   const bodyMat = createClayMaterial(doc.materialFinish);
   const coatTextures = createSurfaceCoatTextures(ext.surfaceCoat);
@@ -5398,18 +6479,30 @@ export function buildCharacterRigAndMesh(
   const skeleton = new THREE.Skeleton(bones);
   skinnedMesh.bind(skeleton);
 
-  // 4b. Attach layered Hair Studio object directly to Head Bone
+  // 4b. Attach layered Hair Studio object directly to Head Bone, conformed to headSdf
   const effectiveHeadTopY = Math.max(
-    headTopY + doc.head.endRadius * 0.55,
-    crownEndY + crownProf.endRadius * 0.45
+    headTopY + doc.head.endRadius * 0.92,
+    crownEndY + crownProf.endRadius * 0.88
   );
   const crownLocalY = effectiveHeadTopY - headCenterY;
+  const headSdf = new SdfFieldEvaluator(headSdfPrims, doc.blendSmoothness);
   const layeredHair = buildLayeredHairGroup(
     doc,
     ext,
     crownLocalY,
     doc.head.midRadius * (doc.head.squashX ?? 1),
-    doc.head.midRadius * (doc.head.squashZ ?? 1.04)
+    doc.head.midRadius * (doc.head.squashZ ?? 1.04),
+    {
+      headSdf,
+      headBonePos: headPos.clone(),
+      headBotY,
+      crownEndY,
+      headForwardTilt: doc.headForwardTilt,
+      crownOffsetZ: crownProf.offsetZ,
+      eyeLocalY: doc.eyeHeight,
+      eyeSpacing: doc.eyeSpacing,
+      eyeRadius: doc.eyeSize * 0.82,
+    }
   );
   if (layeredHair) {
     headB.bone.add(layeredHair);
@@ -5880,12 +6973,23 @@ export function buildCharacterRigAndMesh(
 
   root.updateMatrixWorld(true);
 
+  const tailAnchorPos =
+    tailBones.length >= 2
+      ? tailBones[1].pos.clone().lerp(tailBones[tailBones.length - 1].pos, 0.45)
+      : new THREE.Vector3(0, hipY + 0.04, -doc.hips.endRadius * 0.9);
+  const extraArmAnchorPos = extraArmPos
+    ? extraArmPos.lSh.clone().lerp(extraArmPos.lEl, 0.65)
+    : new THREE.Vector3(shoulderX * 0.9, shoulderY + doc.extraArmHeightOffset, 0.04);
+  const extraLegAnchorPos = extraLegPos
+    ? extraLegPos.lHip.clone().lerp(extraLegPos.lKn, 0.5)
+    : new THREE.Vector3(hipX * 1.15, hipY * 0.65, -doc.extraLegRearOffset);
+
   const partAnchors = [
     { key: 'head', worldPos: headPos },
     { key: 'headCrown', worldPos: new THREE.Vector3(0, (crownStartY + crownEndY) * 0.5, doc.headForwardTilt + crownProf.offsetZ) },
     { key: 'headJaw', worldPos: new THREE.Vector3(0, (jawStartY + jawEndY) * 0.5, (jawStartZ + jawEndZ) * 0.5) },
-    { key: 'neck', worldPos: neckPos },
-    { key: 'torso', worldPos: new THREE.Vector3(0, (chestY + neckBaseY) * 0.5, 0) },
+    { key: 'neck', worldPos: new THREE.Vector3(0, (neckBaseY + neckTopY) * 0.5, neckTopZ * 0.5) },
+    { key: 'torso', worldPos: new THREE.Vector3(0, (chestY + torsoSpineTopY) * 0.5, 0) },
     { key: 'belly', worldPos: spinePos },
     { key: 'hips', worldPos: hipsCenterPos },
     { key: 'muzzle', worldPos: muzzleStartPt.clone().lerp(muzzleEndPt, 0.5) },
@@ -5893,7 +6997,73 @@ export function buildCharacterRigAndMesh(
     { key: 'lowerArm', worldPos: lElbowPos.clone().lerp(lWristPos, 0.5) },
     { key: 'upperLeg', worldPos: lHipPos.clone().lerp(lKneePos, 0.5) },
     { key: 'lowerLeg', worldPos: lKneePos.clone().lerp(lAnklePos, 0.5) },
+    { key: 'tail', worldPos: tailAnchorPos },
+    { key: 'extraArm', worldPos: extraArmAnchorPos },
+    { key: 'extraLeg', worldPos: extraLegAnchorPos },
   ];
+
+  let segmentGuides: CharacterSegmentGuide[] | undefined;
+  if (includeEditorGuides) {
+    segmentGuides = [];
+    const evalCapR = (t: number, r0: number, r1: number, r2: number, curv: number): number => {
+      const half = t <= 0.5;
+      const u = half ? t * 2 : (t - 0.5) * 2;
+      const ra = half ? r0 : r1;
+      const rb = half ? r1 : r2;
+      const smooth = 0.5 - 0.5 * Math.cos(u * Math.PI);
+      const baseR = ra + (rb - ra) * smooth;
+      const bow = curv * Math.sin(u * Math.PI) * 0.22 * ((ra + rb) * 0.5);
+      return Math.max(0.004, baseR + bow);
+    };
+
+    // Add 5-station guide rings for Muzzle if active
+    if (hasMuzzle && muzzlePts.length === 5) {
+      const mAxis = tupleVec(muzzleDir);
+      segmentGuides.push({
+        partKey: 'muzzle',
+        boneIndex: headB.index,
+        rings: muzzlePts.map((pt, idx) => ({
+          center: tupleVec(pt),
+          axis: mAxis,
+          rx: muzzleCfg.segments[idx].rx,
+          rz: muzzleCfg.segments[idx].ry,
+        })),
+        spine: [tupleVec(muzzlePts[0]), tupleVec(muzzlePts[4])],
+      });
+    }
+
+    // Add Start / Mid / End rings for capsule primitives with a partKey (excluding muzzle which has 5-seg rings)
+    for (let i = 0; i < prims.length; i++) {
+      const p = prims[i];
+      if (p.op === 'sub' || p.kind !== 'capsule' || !p.partKey || p.partKey === 'muzzle') continue;
+      // Skip tiny secondary tail spikes/fins or shoulder bridge to keep guides clean
+      if (p.partKey === 'torso' && Math.abs(p.a[0] - p.b[0]) > 0.05) continue;
+      const ax = p.b[0] - p.a[0];
+      const ay = p.b[1] - p.a[1];
+      const az = p.b[2] - p.a[2];
+      const len = Math.hypot(ax, ay, az);
+      const axis: [number, number, number] =
+        len > 1e-5 ? [ax / len, ay / len, az / len] : [0, 1, 0];
+      const ox = p.oval?.[0] ?? 1;
+      const oz = p.oval?.[1] ?? 1;
+      const ts = [0.08, 0.5, 0.92];
+      const rings = ts.map((t) => {
+        const r = evalCapR(t, p.startRadius, p.midRadius, p.endRadius, p.curvature);
+        return {
+          center: [p.a[0] + ax * t, p.a[1] + ay * t, p.a[2] + az * t] as [number, number, number],
+          axis,
+          rx: r * ox,
+          rz: r * oz,
+        };
+      });
+      segmentGuides.push({
+        partKey: p.partKey,
+        boneIndex: p.boneA,
+        rings,
+        spine: [p.a, p.b],
+      });
+    }
+  }
 
   return {
     root,
@@ -5905,6 +7075,10 @@ export function buildCharacterRigAndMesh(
     partAnchors,
     vertexCount: mcResult.vertexCount,
     triangleCount: mcResult.triangleCount,
+    partWeights: mcResult.partWeights,
+    seamZones: mcResult.seamZones,
+    seamGaps: mcResult.seamGaps,
+    segmentGuides,
   };
 }
 

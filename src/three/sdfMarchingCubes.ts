@@ -1,5 +1,42 @@
 import * as THREE from 'three';
 import { edgeTable, triTable } from 'three/addons/objects/MarchingCubes.js';
+import type { CharacterBodyPartKey } from '../types/maker';
+
+export const CHARACTER_PART_KEYS: readonly CharacterBodyPartKey[] = [
+  'head',
+  'headCrown',
+  'headJaw',
+  'muzzle',
+  'neck',
+  'torso',
+  'belly',
+  'hips',
+  'upperArm',
+  'lowerArm',
+  'upperLeg',
+  'lowerLeg',
+  'tail',
+  'extraArm',
+  'extraLeg',
+] as const;
+
+export const CHARACTER_PART_INDEX: Record<CharacterBodyPartKey, number> = {
+  head: 0,
+  headCrown: 1,
+  headJaw: 2,
+  muzzle: 3,
+  neck: 4,
+  torso: 5,
+  belly: 6,
+  hips: 7,
+  upperArm: 8,
+  lowerArm: 9,
+  upperLeg: 10,
+  lowerLeg: 11,
+  tail: 12,
+  extraArm: 13,
+  extraLeg: 14,
+};
 
 export type SdfPrimitiveKind = 'capsule' | 'ellipsoid' | 'roundedBox';
 
@@ -32,6 +69,10 @@ export interface SdfPrimitive {
   boneLerp?: number;
   /** Corner roundness for roundedBox */
   roundness?: number;
+  /** Optional semantic body part key for editor highlight masks */
+  partKey?: CharacterBodyPartKey;
+  /** Optional segment seam zone ID (>= 0) for surface segment boundary lines */
+  seamZone?: number;
 }
 
 interface CompiledPrimitive {
@@ -68,6 +109,9 @@ interface CompiledPrimitive {
   boneA: number;
   boneB: number;
   boneLerp: number;
+  partIdx: number;
+  seamZone: number;
+  seamSlot: number;
   // Expanded AABB for fast culling
   minX: number;
   minY: number;
@@ -82,6 +126,12 @@ export interface SdfMarchingCubesResult {
   vertexCount: number;
   triangleCount: number;
   bounds: THREE.Box3;
+  /** Quantized [0..255] per-vertex influence for each CHARACTER_PART_KEYS entry (len = vertexCount * 15) */
+  partWeights?: Uint8Array;
+  /** Dominant segment seam zone ID per vertex (-1 if untagged) */
+  seamZones?: Int16Array;
+  /** Signed-distance margin to the second-nearest seam zone (for exact boundary interpolation) */
+  seamGaps?: Float32Array;
 }
 
 function evalProfileRadius(
@@ -209,11 +259,16 @@ function compilePrimitives(
   addPrims: CompiledPrimitive[];
   subPrims: CompiledPrimitive[];
   bounds: THREE.Box3;
+  seamZoneBySlot: number[];
+  seamPartIdxBySlot: number[];
 } {
   const addPrims: CompiledPrimitive[] = [];
   const subPrims: CompiledPrimitive[] = [];
   const bounds = new THREE.Box3();
   const padMargin = Math.max(0.08, blendK * 1.6);
+  const seamSlotMap = new Map<number, number>();
+  const seamZoneBySlot: number[] = [];
+  const seamPartIdxBySlot: number[] = [];
 
   for (let i = 0; i < primitives.length; i++) {
     const p = primitives[i];
@@ -265,6 +320,21 @@ function compilePrimitives(
     const aby = p.b[1] - p.a[1];
     const abz = p.b[2] - p.a[2];
 
+    const partIdx = p.partKey ? CHARACTER_PART_INDEX[p.partKey] : -1;
+    const seamZone = p.seamZone !== undefined ? p.seamZone : partIdx;
+    let seamSlot = -1;
+    if (op === 'add' && seamZone >= 0) {
+      const existingSlot = seamSlotMap.get(seamZone);
+      if (existingSlot !== undefined) {
+        seamSlot = existingSlot;
+      } else {
+        seamSlot = seamZoneBySlot.length;
+        seamSlotMap.set(seamZone, seamSlot);
+        seamZoneBySlot.push(seamZone);
+        seamPartIdxBySlot.push(partIdx);
+      }
+    }
+
     const compiled: CompiledPrimitive = {
       kind: p.kind,
       op,
@@ -297,6 +367,9 @@ function compilePrimitives(
       boneA: p.boneA,
       boneB: p.boneB ?? p.boneA,
       boneLerp: p.boneLerp ?? 0,
+      partIdx,
+      seamZone,
+      seamSlot,
       minX: minX - padMargin,
       minY: minY - padMargin,
       minZ: minZ - padMargin,
@@ -317,13 +390,17 @@ function compilePrimitives(
   // Sort larger-blend core primitives first so finer details (fingers/claws) fillet smoothly onto them
   addPrims.sort((a, b) => b.blendScale - a.blendScale);
 
-  return { addPrims, subPrims, bounds };
+  return { addPrims, subPrims, bounds, seamZoneBySlot, seamPartIdxBySlot };
 }
 
 export class SdfFieldEvaluator {
   private readonly addPrims: CompiledPrimitive[];
   private readonly subPrims: CompiledPrimitive[];
   private readonly blendK: number;
+  private readonly seamZoneBySlot: number[];
+  private readonly seamPartIdxBySlot: number[];
+  private readonly _partMinD = new Float32Array(CHARACTER_PART_KEYS.length);
+  private readonly _seamMinD: Float32Array;
   public readonly bounds: THREE.Box3;
 
   constructor(primitives: SdfPrimitive[], blendK: number) {
@@ -332,6 +409,9 @@ export class SdfFieldEvaluator {
     this.addPrims = compiled.addPrims;
     this.subPrims = compiled.subPrims;
     this.bounds = compiled.bounds;
+    this.seamZoneBySlot = compiled.seamZoneBySlot;
+    this.seamPartIdxBySlot = compiled.seamPartIdxBySlot;
+    this._seamMinD = new Float32Array(Math.max(1, this.seamZoneBySlot.length));
   }
 
   public evaluate(px: number, py: number, pz: number): number {
@@ -387,17 +467,22 @@ export class SdfFieldEvaluator {
   }
 
   /**
-   * Computes smoothly blended vertex color AND top-4 bone weights from nearby primitives.
+   * Computes smoothly blended vertex color AND top-4 bone weights from nearby primitives,
+   * and optionally computes per-part glow weights + segment seam zone/gap for editor overlays.
    */
   public evaluateColorAndWeights(
     px: number,
     py: number,
     pz: number,
-    boneCount: number
+    boneCount: number,
+    outPartWeights?: Uint8Array,
+    outPartOffset = 0
   ): {
     color: [number, number, number];
     skinIndices: [number, number, number, number];
     skinWeights: [number, number, number, number];
+    seamZone: number;
+    seamGap: number;
   } {
     const adds = this.addPrims;
     const sharpnessColor = 1 / Math.max(0.02, this.blendK * 0.55);
@@ -406,6 +491,14 @@ export class SdfFieldEvaluator {
     let minD = 1e6;
     const dists: number[] = new Array(adds.length);
     const ts: number[] = new Array(adds.length);
+
+    const partMinD = this._partMinD;
+    const seamMinD = this._seamMinD;
+    const slotCount = this.seamZoneBySlot.length;
+    if (outPartWeights) {
+      partMinD.fill(99);
+      seamMinD.fill(99);
+    }
 
     for (let i = 0; i < adds.length; i++) {
       const p = adds[i];
@@ -421,6 +514,14 @@ export class SdfFieldEvaluator {
       dists[i] = res.d;
       ts[i] = res.t;
       if (res.d < minD) minD = res.d;
+      if (outPartWeights) {
+        if (p.partIdx >= 0 && res.d < partMinD[p.partIdx]) {
+          partMinD[p.partIdx] = res.d;
+        }
+        if (p.seamSlot >= 0 && res.d < seamMinD[p.seamSlot]) {
+          seamMinD[p.seamSlot] = res.d;
+        }
+      }
     }
 
     let cWeightSum = 0;
@@ -498,7 +599,62 @@ export class SdfFieldEvaluator {
       topW[0] = 1;
     }
 
-    return { color, skinIndices: topIdx, skinWeights: topW };
+    let seamZone = -1;
+    let seamGap = 0;
+    if (outPartWeights) {
+      const partCount = CHARACTER_PART_KEYS.length;
+      const sharpPart = 1 / Math.max(0.011, this.blendK * 0.24);
+      // Closest non-cranial part distance prevents headCrown/headJaw from spilling onto neck or muzzle
+      let nonHeadMinD = 99;
+      for (let k = 3; k < partCount; k++) {
+        if (partMinD[k] < nonHeadMinD) nonHeadMinD = partMinD[k];
+      }
+
+      for (let k = 0; k < partCount; k++) {
+        const pd = partMinD[k];
+        if (pd > 20) {
+          outPartWeights[outPartOffset + k] = 0;
+          continue;
+        }
+        let w = 0;
+        if (k === 1 || k === 2) {
+          // headCrown & headJaw: glow even when slightly recessed inside the main skull
+          const rawGap = Math.max(0, pd - 0.012);
+          const otherDelta = Math.max(0, pd - nonHeadMinD);
+          w = Math.exp(-rawGap / 0.018) * Math.exp(-otherDelta / 0.015);
+        } else {
+          const delta = Math.max(0, pd - minD);
+          w = Math.exp(-delta * sharpPart);
+        }
+        outPartWeights[outPartOffset + k] = Math.min(255, Math.max(0, Math.round(w * 255)));
+      }
+
+      // Find best & second-best distinct seam zones (bias headCrown/headJaw slightly so subtle chin/brow seams appear)
+      let bestSlot = -1;
+      let bestEffD = 99;
+      let secondEffD = 99;
+      for (let s = 0; s < slotCount; s++) {
+        let sd = seamMinD[s];
+        if (sd > 20) continue;
+        const sPart = this.seamPartIdxBySlot[s];
+        if ((sPart === 1 || sPart === 2) && sd < 0.025) {
+          sd -= 0.016;
+        }
+        if (sd < bestEffD) {
+          secondEffD = bestEffD;
+          bestEffD = sd;
+          bestSlot = s;
+        } else if (sd < secondEffD) {
+          secondEffD = sd;
+        }
+      }
+      if (bestSlot >= 0) {
+        seamZone = this.seamZoneBySlot[bestSlot];
+        seamGap = secondEffD < 20 ? Math.max(0, secondEffD - bestEffD) : 0.25;
+      }
+    }
+
+    return { color, skinIndices: topIdx, skinWeights: topW, seamZone, seamGap };
   }
 
   /**
@@ -588,7 +744,8 @@ export class SdfFieldEvaluator {
 export function polygonizeSdfToGeometry(
   evaluator: SdfFieldEvaluator,
   boneCount: number,
-  targetResolution: number
+  targetResolution: number,
+  includePartMasks = false
 ): SdfMarchingCubesResult {
   const bounds = evaluator.bounds.clone();
   if (bounds.isEmpty()) {
@@ -643,6 +800,10 @@ export function polygonizeSdfToGeometry(
   const skinIndices: number[] = [];
   const skinWeights: number[] = [];
   const indices: number[] = [];
+  const partWeightsList: number[] | null = includePartMasks ? [] : null;
+  const seamZonesList: number[] | null = includePartMasks ? [] : null;
+  const seamGapsList: number[] | null = includePartMasks ? [] : null;
+  const scratchPartW = includePartMasks ? new Uint8Array(CHARACTER_PART_KEYS.length) : undefined;
 
   const gradEps = Math.max(0.004, cellSize * 0.45);
   const tmpColor = new THREE.Color();
@@ -668,12 +829,13 @@ export function polygonizeSdfToGeometry(
     const pz = originZ + (iz + (axis === 2 ? mu : 0)) * cellSize;
 
     const [nxv, nyv, nzv] = evaluator.evaluateNormal(px, py, pz, gradEps);
-    const { color, skinIndices: si, skinWeights: sw } = evaluator.evaluateColorAndWeights(
-      px,
-      py,
-      pz,
-      boneCount
-    );
+    const {
+      color,
+      skinIndices: si,
+      skinWeights: sw,
+      seamZone,
+      seamGap,
+    } = evaluator.evaluateColorAndWeights(px, py, pz, boneCount, scratchPartW, 0);
 
     const vIdx = positions.length / 3;
     positions.push(px, py, pz);
@@ -694,6 +856,14 @@ export function polygonizeSdfToGeometry(
 
     skinIndices.push(si[0], si[1], si[2], si[3]);
     skinWeights.push(sw[0], sw[1], sw[2], sw[3]);
+
+    if (partWeightsList && scratchPartW && seamZonesList && seamGapsList) {
+      for (let k = 0; k < scratchPartW.length; k++) {
+        partWeightsList.push(scratchPartW[k]);
+      }
+      seamZonesList.push(seamZone);
+      seamGapsList.push(seamGap);
+    }
 
     edgeVertexMap.set(key, vIdx);
     return vIdx;
@@ -781,5 +951,8 @@ export function polygonizeSdfToGeometry(
     vertexCount: positions.length / 3,
     triangleCount: indices.length / 3,
     bounds: geometry.boundingBox ? geometry.boundingBox.clone() : bounds,
+    partWeights: partWeightsList ? new Uint8Array(partWeightsList) : undefined,
+    seamZones: seamZonesList ? new Int16Array(seamZonesList) : undefined,
+    seamGaps: seamGapsList ? new Float32Array(seamGapsList) : undefined,
   };
 }

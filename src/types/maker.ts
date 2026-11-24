@@ -2506,7 +2506,9 @@ export type CharacterHairStyle =
   | 'surferCurtains'
   // Female / Long styles
   | 'longStraight'
+  | 'longEndCurls'
   | 'bobCut'
+  | 'bobFlip'
   | 'wavyShoulder'
   | 'twinPigtails'
   | 'highBun'
@@ -2522,6 +2524,70 @@ export type CharacterHairStyle =
   | 'lionMane'
   | 'featherTuft'
   | 'fluffyBangs';
+
+export type CharacterHairLayoutMode =
+  | 'partedSides'
+  | 'afroSides'
+  | 'spikySides'
+  | 'crest'
+  | 'mane';
+
+export type CharacterHairDetailStyle =
+  | 'none'
+  | 'endCurls'
+  | 'bobFlip'
+  | 'pigtails'
+  | 'twinBuns'
+  | 'ponytail'
+  | 'highBun'
+  | 'braidPlait'
+  | 'pompCrest';
+
+export interface CharacterHairSideConfig {
+  enabled: boolean;
+  /** Closeness / outward lift relative to skull (-0.03 = hugs tight .. +0.08 = lifted volume) */
+  skinHug: number;
+  /** Width & thickness of sculpted locks or puff clusters (0.4 .. 2.0) */
+  fullness: number;
+  /** Vertical flatten vs tall crown volume (0.35 = sleek/flat .. 1.8 = tall) */
+  flatness: number;
+  /** Draping length of locks / bangs reach (0.2 .. 2.2) */
+  length: number;
+  /** Sharpness/taper & spiky splay (0 = smooth rounded locks .. 1 = sharp spikes) */
+  spikiness: number;
+  /** Individual puff & curl cluster breakup (0 = sleek locks .. 1 = curly puffs) */
+  puffiness: number;
+  /** Scale of individual puffs/curls (0.4 .. 2.0) */
+  puffScale: number;
+  /** Side X offset (-0.12 .. +0.12) */
+  offsetX: number;
+  /** Side Y offset (-0.12 .. +0.12) */
+  offsetY: number;
+  /** Side Z offset (-0.12 .. +0.12) */
+  offsetZ: number;
+  /** Side scale multiplier (0.5 .. 1.8) */
+  scale: number;
+  /** Tip flare (-1 = tucked inward .. +1 = flared outward) */
+  flare: number;
+  /** Front bangs drop/coverage (0 = swept off forehead .. 1 = full framed bangs) */
+  bangsDrop: number;
+}
+
+export interface CharacterHairSculptConfig {
+  layout: CharacterHairLayoutMode;
+  /** Center part gap width (-0.015 = overlapping .. +0.055 = clear scalp part) */
+  partGap: number;
+  /** Left/Right part line shift (-0.08 .. +0.08) */
+  partShift: number;
+  /** Mirror left & right side parameters until unlinked */
+  mirrorSides: boolean;
+  left: CharacterHairSideConfig;
+  right: CharacterHairSideConfig;
+  detailStyle: CharacterHairDetailStyle;
+  detailScale: number;
+  detailCurl: number;
+  detailOffsetY: number;
+}
 
 export type CharacterSurfaceCoatMode =
   | 'none'
@@ -2741,6 +2807,10 @@ export interface CharacterMakerDoc {
   hairRotY?: number;
   hairRotZ?: number;
   hairScale?: number;
+  /** Dual-side sculpted hair parameters & detail attachments */
+  hairConfig?: CharacterHairSculptConfig;
+  /** Active custom hair preset ID if loaded from or saved to Custom Hair Presets */
+  customHairPresetId?: string;
 
   /** Surface Coat: fur (short, long, clumped) and scales (fish, dragon, hex) */
   surfaceCoat?: CharacterSurfaceCoatConfig;

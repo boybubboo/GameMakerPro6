@@ -20,6 +20,7 @@ import {
   Save,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   Undo2,
   Upload,
   User,
@@ -39,6 +40,7 @@ import {
   createDefaultHeadJaw,
   createDefaultSpikesConfig,
   createDefaultSurfaceCoat,
+  createHairPresetConfig,
   createMuzzlePreset,
   getBeakPresetDefaults,
   MUZZLE_PRESET_OPTIONS,
@@ -46,11 +48,20 @@ import {
   type BuiltCharacterAsset,
 } from '../../three/characterMakerBuilder';
 import {
+  createCharacterSegmentOverlay,
+  type CharacterSegmentOverlayController,
+} from '../../three/characterSegmentOverlay';
+import {
   hasSavedCharacterSpeciesDefault,
   resetCharacterSpeciesDefault,
   saveCharacterSpeciesDefault,
   useDefaultCharacterPresetsVersion,
 } from '../../utils/defaultCharacterPresets';
+import {
+  deleteCustomHairPreset,
+  saveCustomHairPreset,
+  useCustomHairPresets,
+} from '../../utils/customHairPresets';
 import { createMakerRenderer, detectSoftwareGl, disposeObject3D, setupSceneEnvironment } from '../../three/islandScene';
 import { createDefaultRigSettings, inspectModelSkeleton, ProceduralRigController } from '../../three/proceduralRigAnimator';
 import { isWebGPUFallbackAdapter } from '../../three/webglUtils';
@@ -73,6 +84,10 @@ import type {
   CharacterEyePupilStyle,
   CharacterEyewearStyle,
   CharacterFootStyle,
+  CharacterHairDetailStyle,
+  CharacterHairLayoutMode,
+  CharacterHairSculptConfig,
+  CharacterHairSideConfig,
   CharacterHairStyle,
   CharacterHandStyle,
   CharacterHeadGearStyle,
@@ -221,7 +236,9 @@ const HAIR_OPTIONS: {
   { id: 'surferCurtains', label: 'Surfer Part', group: 'male' },
   // Female / Long
   { id: 'longStraight', label: 'Long Straight', group: 'female' },
+  { id: 'longEndCurls', label: 'Long End Curls', group: 'female' },
   { id: 'bobCut', label: 'Classic Bob', group: 'female' },
+  { id: 'bobFlip', label: 'Flipped Bob Curls', group: 'female' },
   { id: 'wavyShoulder', label: 'Wavy Shoulder', group: 'female' },
   { id: 'twinPigtails', label: 'Twin Pigtails', group: 'female' },
   { id: 'highBun', label: 'High Bun', group: 'female' },
@@ -529,7 +546,10 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
 
   const [activePart, setActivePart] = useState<CharacterBodyPartKey>('upperLeg');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('body');
-  const [hairGroupFilter, setHairGroupFilter] = useState<'all' | 'male' | 'female' | 'creature'>('all');
+  const customHairPresets = useCustomHairPresets();
+  const [hairEditSide, setHairEditSide] = useState<'both' | 'left' | 'right'>('both');
+  const [saveHairOpen, setSaveHairOpen] = useState(false);
+  const [customHairName, setCustomHairName] = useState('');
   const [animMode, setAnimMode] = useState<PreviewAnimMode>('idle');
   const [paintStrokes, setPaintStrokes] = useState<VertexPaintStroke[]>(
     () => (doc.vertexPaintStrokes ? JSON.parse(JSON.stringify(doc.vertexPaintStrokes)) : [])
@@ -553,10 +573,13 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
   paintStrokesRef.current = paintStrokes;
 
   const [showSkeleton, setShowSkeleton] = useState(false);
+  const [showPartHighlights, setShowPartHighlights] = useState(true);
   const [crispResMode, setCrispResMode] = useState(true);
   const [isSliderActive, setIsSliderActive] = useState(false);
-  const [cameraPreset, setCameraPreset] = useState<CameraPreset>('fullBody');
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset | null>('fullBody');
   const [cameraNonce, setCameraNonce] = useState(0);
+  const initialCamAppliedRef = useRef(false);
+  const pendingFocusPartRef = useRef<CharacterBodyPartKey | null>(null);
   const [showLoadMenu, setShowLoadMenu] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -738,15 +761,19 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
     built: BuiltCharacterAsset | null;
     rigController: ProceduralRigController | null;
     skeletonHelper: THREE.SkeletonHelper | null;
+    segmentOverlay: CharacterSegmentOverlayController | null;
     manualBlinkTimer: number;
     blinkLoopTimer: number;
     paintSession: MakerVertexPaintSession;
     paintableMeshes: THREE.Mesh[];
+    cameraFocusAnim: { targetPos: THREE.Vector3; targetLook: THREE.Vector3 } | null;
   } | null>(null);
 
   const latestRef = useRef({
     animMode,
     showSkeleton,
+    activePart,
+    showPartHighlights,
     autoBlink: doc.autoBlink,
     inspectorTab,
     paintTool,
@@ -756,6 +783,8 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
   latestRef.current = {
     animMode,
     showSkeleton,
+    activePart,
+    showPartHighlights,
     autoBlink: doc.autoBlink,
     inspectorTab,
     paintTool,
@@ -835,9 +864,9 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       c.target.set(0, 0.78, 0);
       c.enableDamping = !isSoftwareGl;
       c.dampingFactor = 0.08;
-      c.minDistance = 0.45;
+      c.minDistance = 0.35;
       c.maxDistance = 12;
-      c.maxPolarAngle = Math.PI * 0.52;
+      c.maxPolarAngle = Math.PI * 0.54;
       c.update();
       return c;
     };
@@ -853,11 +882,16 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       built: null as BuiltCharacterAsset | null,
       rigController: null as ProceduralRigController | null,
       skeletonHelper: null as THREE.SkeletonHelper | null,
+      segmentOverlay: null as CharacterSegmentOverlayController | null,
       manualBlinkTimer: 0,
       blinkLoopTimer: 2.2,
       paintSession,
       paintableMeshes: [] as THREE.Mesh[],
+      cameraFocusAnim: null as { targetPos: THREE.Vector3; targetLook: THREE.Vector3 } | null,
     };
+    controls.addEventListener('start', () => {
+      state.cameraFocusAnim = null;
+    });
     studioRef.current = state;
 
     const onPointerDown = (e: PointerEvent) => {
@@ -1021,6 +1055,20 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
           state.skeletonHelper.visible = cur.showSkeleton;
         }
 
+        if (state.cameraFocusAnim) {
+          const alpha = isSoftwareGl ? 1 : 1 - Math.exp(-10 * dt);
+          camera.position.lerp(state.cameraFocusAnim.targetPos, alpha);
+          state.controls.target.lerp(state.cameraFocusAnim.targetLook, alpha);
+          if (
+            camera.position.distanceToSquared(state.cameraFocusAnim.targetPos) < 1e-5 &&
+            state.controls.target.distanceToSquared(state.cameraFocusAnim.targetLook) < 1e-5
+          ) {
+            camera.position.copy(state.cameraFocusAnim.targetPos);
+            state.controls.target.copy(state.cameraFocusAnim.targetLook);
+            state.cameraFocusAnim = null;
+          }
+        }
+
         state.controls.update();
         renderer.render(scene, camera);
       } catch {
@@ -1055,6 +1103,9 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       container.innerHTML = '';
       container.appendChild(renderer.domElement);
       controls = createControls(renderer.domElement);
+      controls.addEventListener('start', () => {
+        state.cameraFocusAnim = null;
+      });
       attachCanvasPointerListeners(renderer.domElement);
       state.renderer = renderer;
       state.controls = controls;
@@ -1106,6 +1157,8 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerUp);
+      state.segmentOverlay?.dispose();
+      state.segmentOverlay = null;
       state.paintSession.dispose(scene);
       state.controls.dispose();
       disposeObject3D(charHolder);
@@ -1129,7 +1182,9 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
     const delayMs = isSliderActive ? 12 : 45;
 
     const timer = window.setTimeout(() => {
-      const built = buildCharacterRigAndMesh(doc, targetRes);
+      const built = buildCharacterRigAndMesh(doc, targetRes, true);
+      st.segmentOverlay?.dispose();
+      st.segmentOverlay = null;
       if (st.skeletonHelper) {
         st.scene.remove(st.skeletonHelper);
         st.skeletonHelper.dispose();
@@ -1154,15 +1209,33 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
       if (paintStrokesRef.current.length > 0) {
         applyVertexPaintStrokesToObject(built.root, paintStrokesRef.current);
       }
+      st.segmentOverlay = createCharacterSegmentOverlay(
+        built,
+        latestRef.current.activePart,
+        latestRef.current.showPartHighlights
+      );
       setMeshStats({
         verts: built.vertexCount,
         tris: built.triangleCount,
         bones: built.bones.length,
       });
+      if (pendingFocusPartRef.current) {
+        const pendingPart = pendingFocusPartRef.current;
+        pendingFocusPartRef.current = null;
+        focusBodyPart(pendingPart);
+      }
     }, delayMs);
 
     return () => window.clearTimeout(timer);
   }, [doc, crispResMode, isSliderActive]);
+
+  // Update active part yellow highlight and segment boundary visibility without rebuilding mesh
+  useEffect(() => {
+    const ov = studioRef.current?.segmentOverlay;
+    if (!ov) return;
+    ov.setActivePart(activePart);
+    ov.setVisible(showPartHighlights);
+  }, [activePart, showPartHighlights]);
 
   // Replay non-destructive vertex paint strokes without rebuilding Marching Cubes
   useEffect(() => {
@@ -1235,27 +1308,170 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
     };
   }, [inspectorTab]);
 
+  const focusBodyPart = useCallback((partKey: CharacterBodyPartKey) => {
+    const st = studioRef.current;
+    if (!st) return;
+    const built = st.built;
+    if (!built) {
+      pendingFocusPartRef.current = partKey;
+      return;
+    }
+
+    const anchor = built.partAnchors.find((a) => a.key === partKey)?.worldPos;
+    const guides = built.segmentGuides?.filter((g) => g.partKey === partKey) ?? [];
+    const isArmPart = partKey === 'upperArm' || partKey === 'lowerArm' || partKey === 'extraArm';
+    const isLegPair = partKey === 'upperLeg' || partKey === 'lowerLeg' || partKey === 'extraLeg';
+
+    const selectedGuides = isArmPart
+      ? guides.filter((g) => {
+          const avgX =
+            g.rings.length > 0
+              ? g.rings.reduce((acc, r) => acc + r.center[0], 0) / g.rings.length
+              : 0;
+          return avgX >= -0.02;
+        })
+      : guides;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    const sampleGuides = selectedGuides.length > 0 ? selectedGuides : guides;
+    for (const g of sampleGuides) {
+      for (const r of g.rings) {
+        const rad = Math.max(r.rx, r.rz, 0.04);
+        minX = Math.min(minX, r.center[0] - rad);
+        maxX = Math.max(maxX, r.center[0] + rad);
+        minY = Math.min(minY, r.center[1] - rad);
+        maxY = Math.max(maxY, r.center[1] + rad);
+        minZ = Math.min(minZ, r.center[2] - rad);
+        maxZ = Math.max(maxZ, r.center[2] + rad);
+      }
+    }
+
+    const hasBounds = Number.isFinite(minX) && Number.isFinite(maxX);
+    const center = new THREE.Vector3(
+      hasBounds ? (minX + maxX) * 0.5 : anchor?.x ?? 0,
+      hasBounds ? (minY + maxY) * 0.5 : anchor?.y ?? 0.9,
+      hasBounds ? (minZ + maxZ) * 0.5 : anchor?.z ?? 0
+    );
+    if (isLegPair) {
+      center.x = 0;
+    } else if (anchor && !hasBounds) {
+      center.copy(anchor);
+    } else if (
+      anchor &&
+      (partKey === 'head' ||
+        partKey === 'neck' ||
+        partKey === 'belly' ||
+        partKey === 'hips' ||
+        partKey === 'torso')
+    ) {
+      center.x = anchor.x;
+      center.z = anchor.z;
+    }
+
+    const extraPadY = partKey === 'head' ? 0.14 : partKey === 'headCrown' ? 0.1 : 0.06;
+    const halfH = hasBounds ? Math.max(0.08, (maxY - minY) * 0.5 + extraPadY) : 0.22;
+    const halfW = hasBounds ? Math.max(0.08, (maxX - minX) * 0.5 + 0.07) : 0.22;
+
+    const minDistByPart: Record<CharacterBodyPartKey, number> = {
+      head: 1.15,
+      headCrown: 0.95,
+      headJaw: 0.9,
+      muzzle: 0.82,
+      neck: 0.92,
+      torso: 1.25,
+      belly: 1.18,
+      hips: 1.15,
+      upperArm: 1.0,
+      lowerArm: 0.95,
+      upperLeg: 1.12,
+      lowerLeg: 1.08,
+      tail: 1.32,
+      extraArm: 1.08,
+      extraLeg: 1.22,
+    };
+
+    const halfFovRad = THREE.MathUtils.degToRad((st.camera.fov || 40) * 0.5);
+    const tanHalfFov = Math.max(0.15, Math.tan(halfFovRad));
+    const aspect = Math.max(0.6, st.camera.aspect || 1.3);
+    const distV = (halfH * 2.2) / tanHalfFov;
+    const distH = (halfW * 2.2) / (tanHalfFov * aspect);
+    const minDist = minDistByPart[partKey] ?? 1.05;
+    const dist = THREE.MathUtils.clamp(Math.max(distV, distH, minDist), minDist, 3.2);
+
+    const dir = new THREE.Vector3(0.06, 0.06, 0.996);
+    if (partKey === 'tail') {
+      dir.set(0.62, 0.2, -0.76);
+    } else if (partKey === 'extraLeg') {
+      dir.set(0.45, 0.12, 0.88);
+    } else if (partKey === 'muzzle') {
+      dir.set(0.28, 0.05, 0.96);
+    } else if (isArmPart) {
+      dir.set(0.14, 0.06, 0.99);
+    } else if (partKey === 'headJaw' || partKey === 'neck') {
+      dir.set(0.08, 0.02, 0.996);
+    } else if (partKey === 'headCrown') {
+      dir.set(0.06, 0.14, 0.988);
+    }
+    dir.normalize();
+
+    const targetPos = center.clone().addScaledVector(dir, dist);
+    if (targetPos.y < 0.28) targetPos.y = 0.28;
+
+    st.cameraFocusAnim = {
+      targetPos,
+      targetLook: center,
+    };
+  }, []);
+
+  const selectBodyPart = useCallback(
+    (partKey: CharacterBodyPartKey, openBodyTab = false) => {
+      setActivePart(partKey);
+      if (openBodyTab) {
+        setInspectorTab('body');
+      }
+      setCameraPreset(null);
+      focusBodyPart(partKey);
+    },
+    [focusBodyPart]
+  );
+
   // Camera framing presets
   useEffect(() => {
     const st = studioRef.current;
-    if (!st) return;
+    if (!st || !cameraPreset) return;
     const headAnchor = st.built?.partAnchors.find((a) => a.key === 'head')?.worldPos;
     const hy = headAnchor ? headAnchor.y : 1.35;
 
+    const targetPos = new THREE.Vector3();
+    const targetLook = new THREE.Vector3();
     if (cameraPreset === 'face') {
-      st.camera.position.set(0.24, hy + 0.03, 1.05);
-      st.controls.target.set(0, hy - 0.01, 0.08);
+      targetPos.set(0.24, hy + 0.03, 1.05);
+      targetLook.set(0, hy - 0.01, 0.08);
     } else if (cameraPreset === 'side') {
-      st.camera.position.set(2.85, 1.05, 0.15);
-      st.controls.target.set(0, 0.82, 0);
+      targetPos.set(2.85, 1.05, 0.15);
+      targetLook.set(0, 0.82, 0);
     } else if (cameraPreset === 'back') {
-      st.camera.position.set(-0.35, 1.25, -2.75);
-      st.controls.target.set(0, 0.82, 0);
+      targetPos.set(-0.35, 1.25, -2.75);
+      targetLook.set(0, 0.82, 0);
     } else {
-      st.camera.position.set(1.55, 1.32, 2.72);
-      st.controls.target.set(0, 0.8, 0);
+      targetPos.set(1.55, 1.32, 2.72);
+      targetLook.set(0, 0.8, 0);
     }
-    st.controls.update();
+
+    if (!initialCamAppliedRef.current) {
+      initialCamAppliedRef.current = true;
+      st.cameraFocusAnim = null;
+      st.camera.position.copy(targetPos);
+      st.controls.target.copy(targetLook);
+      st.controls.update();
+    } else {
+      st.cameraFocusAnim = { targetPos, targetLook };
+    }
   }, [cameraPreset, cameraNonce]);
 
   // Save rigged character .glb + characterRecipe to Chars (`category: 'character'`)
@@ -1805,8 +2021,22 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
             </div>
 
             <div className="space-y-1.5 pt-1 border-t border-slate-200/70 dark:border-white/[0.06]">
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 px-1">
-                Sculpt Segment Profile
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                  Sculpt Segment Profile
+                </span>
+                <label
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 dark:text-[#C8D0E4] cursor-pointer select-none"
+                  title="Show or hide yellow body-part highlight and faint segment lines"
+                >
+                  <input
+                    type="checkbox"
+                    checked={showPartHighlights}
+                    onChange={(e) => setShowPartHighlights(e.target.checked)}
+                    className="w-3 h-3 accent-[#FACC15] rounded cursor-pointer"
+                  />
+                  <span>Guides</span>
+                </label>
               </div>
               <div className="grid grid-cols-3 lg:grid-cols-1 gap-1">
                 {BODY_PART_ITEMS.map((item) => {
@@ -1819,10 +2049,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                     <button
                       key={item.key}
                       type="button"
-                      onClick={() => {
-                        setActivePart(item.key);
-                        setInspectorTab('body');
-                      }}
+                      onClick={() => selectBodyPart(item.key, true)}
                       className={`px-2 py-1.5 rounded-xl text-[11px] font-bold flex items-center justify-between border transition-colors ${
                         active
                           ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
@@ -1875,6 +2102,27 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
               </div>
 
               <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-2xl bg-slate-900/80 backdrop-blur-md border border-white/10 shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => setShowPartHighlights((v) => !v)}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                    showPartHighlights
+                      ? 'bg-[#FACC15]/20 text-[#FDE047] border border-[#FACC15]/45'
+                      : 'text-slate-300 hover:bg-white/10 border border-transparent'
+                  }`}
+                  title="Show or hide yellow part highlight glow and faint segment boundary lines"
+                >
+                  <span
+                    className={`w-3.5 h-3.5 rounded-[4px] border inline-flex items-center justify-center transition-colors ${
+                      showPartHighlights
+                        ? 'bg-[#FACC15] border-[#FACC15] text-slate-950'
+                        : 'border-slate-400/60 bg-transparent'
+                    }`}
+                  >
+                    {showPartHighlights && <Check size={10} strokeWidth={3} />}
+                  </span>
+                  Segment Guides
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowSkeleton((s) => !s)}
@@ -2018,7 +2266,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                       </span>
                       <select
                         value={activePart}
-                        onChange={(e) => setActivePart(e.target.value as CharacterBodyPartKey)}
+                        onChange={(e) => selectBodyPart(e.target.value as CharacterBodyPartKey)}
                         className="px-2 py-1 rounded-lg bg-white dark:bg-[#171A25] border border-slate-200/80 dark:border-white/10 text-[11px] font-bold"
                       >
                         {BODY_PART_ITEMS.map((item) => (
@@ -2176,7 +2424,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                               <button
                                 key={seg.key}
                                 type="button"
-                                onClick={() => setActivePart(seg.key)}
+                                onClick={() => selectBodyPart(seg.key)}
                                 className={`py-1 px-1 rounded-lg text-[10px] font-extrabold transition-colors truncate ${
                                   activePart === seg.key
                                     ? 'bg-[#7C5CFF] text-white'
@@ -2234,7 +2482,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                           'Segment Length',
                           activeProfile.length,
                           0.02,
-                          0.85,
+                          activePart === 'neck' ? 1.05 : 0.85,
                           0.01,
                           (val) =>
                             updateDoc((d) => setLimbProfile(d, activePart, (p) => ({ ...p, length: val }))),
@@ -2311,7 +2559,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                       {activePart !== 'muzzle' && (
                         <button
                           type="button"
-                          onClick={() => setActivePart('muzzle')}
+                          onClick={() => selectBodyPart('muzzle')}
                           className="px-2 py-0.5 rounded-lg bg-[#7C5CFF]/15 text-[#7C5CFF] text-[10px] font-extrabold hover:bg-[#7C5CFF] hover:text-white transition-colors"
                         >
                           5-Seg Muzzle
@@ -2812,173 +3060,695 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                     }),
                     record
                   );
-                const filteredHair =
-                  hairGroupFilter === 'all'
-                    ? HAIR_OPTIONS
-                    : HAIR_OPTIONS.filter((h) => h.group === hairGroupFilter);
+                const hairCfg: CharacterHairSculptConfig = ext.hairConfig;
+                const matchedCustomHair = doc.customHairPresetId
+                  ? customHairPresets.find((p) => p.id === doc.customHairPresetId)
+                  : undefined;
+                const hairSelectValue =
+                  doc.hairStyle === 'none'
+                    ? 'none'
+                    : matchedCustomHair
+                      ? `custom:${matchedCustomHair.id}`
+                      : doc.hairStyle;
+
+                const patchHairConfig = (patch: Partial<CharacterHairSculptConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).hairConfig;
+                      const next: CharacterHairSculptConfig = { ...prev, ...patch };
+                      if (patch.mirrorSides === true) {
+                        const source = hairEditSide === 'right' ? prev.right : prev.left;
+                        next.left = { ...source };
+                        next.right = { ...source };
+                      }
+                      return { ...d, hairConfig: next };
+                    },
+                    record
+                  );
+
+                const patchHairSide = (patch: Partial<CharacterHairSideConfig>, record = false) =>
+                  updateDoc(
+                    (d) => {
+                      const prev = resolveCharacterExtras(d).hairConfig;
+                      if (hairEditSide === 'both') {
+                        return {
+                          ...d,
+                          hairConfig: {
+                            ...prev,
+                            mirrorSides: true,
+                            left: { ...prev.left, ...patch },
+                            right: { ...prev.right, ...patch },
+                          },
+                        };
+                      }
+                      if (hairEditSide === 'left') {
+                        return {
+                          ...d,
+                          hairConfig: {
+                            ...prev,
+                            mirrorSides: false,
+                            left: { ...prev.left, ...patch },
+                          },
+                        };
+                      }
+                      return {
+                        ...d,
+                        hairConfig: {
+                          ...prev,
+                          mirrorSides: false,
+                          right: { ...prev.right, ...patch },
+                        },
+                      };
+                    },
+                    record
+                  );
+
+                const activeSideCfg = hairEditSide === 'right' ? hairCfg.right : hairCfg.left;
+                const maleHair = HAIR_OPTIONS.filter((h) => h.group === 'male');
+                const femaleHair = HAIR_OPTIONS.filter((h) => h.group === 'female');
+                const creatureHair = HAIR_OPTIONS.filter((h) => h.group === 'creature');
+                const isSideBasedLayout =
+                  hairCfg.layout === 'partedSides' ||
+                  hairCfg.layout === 'afroSides' ||
+                  hairCfg.layout === 'spikySides';
+
                 return (
                   <>
-                    {/* 1. Layered Hair Studio (Bone-Mounted Object) */}
+                    {/* 1. Sculpted Dual-Side Hair Studio */}
                     <div className="p-3 rounded-2xl bg-slate-100/80 dark:bg-[#1B1F2E] space-y-3">
                       <div className="flex items-center justify-between gap-2">
                         <div>
-                          <div className="text-xs font-extrabold">Hair Studio (Layered Object)</div>
+                          <div className="text-xs font-extrabold">Hair Studio (Dual-Side Sculpt)</div>
                           <div className="text-[10px] text-slate-500 dark:text-[#8D95AA]">
-                            Independent scalp layer — move, rotate &amp; scale freely
+                            Left &amp; right parted locks/puffs — zero bowl cap
                           </div>
                         </div>
                         <button
                           type="button"
-                          onClick={() => updateDoc((d) => ({ ...d, hairStyle: 'none' }), true)}
-                          className={`px-2 py-1 rounded-lg text-[10px] font-extrabold border ${
-                            doc.hairStyle === 'none'
-                              ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
-                              : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.08]'
-                          }`}
+                          onClick={() => {
+                            const suggested =
+                              matchedCustomHair?.name ||
+                              HAIR_OPTIONS.find((h) => h.id === doc.hairStyle)?.label ||
+                              'My Hair';
+                            setCustomHairName(suggested);
+                            setSaveHairOpen((v) => !v);
+                          }}
+                          disabled={doc.hairStyle === 'none'}
+                          className="px-2 py-1 rounded-lg text-[10px] font-extrabold bg-[#7C5CFF]/15 hover:bg-[#7C5CFF]/25 text-[#7C5CFF] disabled:opacity-40 flex items-center gap-1"
                         >
-                          None
+                          <Plus size={11} />
+                          <span>Save Preset</span>
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-4 gap-1 p-1 rounded-xl bg-white/80 dark:bg-[#141722]">
-                        {(
-                          [
-                            { id: 'all', label: 'All' },
-                            { id: 'male', label: 'Male' },
-                            { id: 'female', label: 'Female' },
-                            { id: 'creature', label: 'Creature' },
-                          ] as const
-                        ).map((tab) => (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => setHairGroupFilter(tab.id)}
-                            className={`py-1 rounded-lg text-[10px] font-extrabold transition-colors ${
-                              hairGroupFilter === tab.id
-                                ? 'bg-[#7C5CFF] text-white'
-                                : 'text-slate-500 dark:text-[#8D95AA] hover:text-slate-900 dark:hover:text-white'
-                            }`}
+                      {/* Hair Preset Dropdown + Custom Update/Delete */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            aria-label="Hair preset"
+                            value={hairSelectValue}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === 'none') {
+                                updateDoc(
+                                  (d) => ({ ...d, hairStyle: 'none', customHairPresetId: undefined }),
+                                  true
+                                );
+                                return;
+                              }
+                              if (val.startsWith('custom:')) {
+                                const id = val.slice('custom:'.length);
+                                const found = customHairPresets.find((p) => p.id === id);
+                                if (found) {
+                                  const clonedCfg = JSON.parse(
+                                    JSON.stringify(found.hairConfig)
+                                  ) as CharacterHairSculptConfig;
+                                  setHairEditSide(clonedCfg.mirrorSides ? 'both' : 'left');
+                                  updateDoc(
+                                    (d) => ({
+                                      ...d,
+                                      hairStyle: found.baseStyle,
+                                      customHairPresetId: found.id,
+                                      hairColor: found.hairColor,
+                                      hairAccentColor: found.hairAccentColor,
+                                      hairScale: found.hairScale,
+                                      hairOffsetX: found.hairOffsetX,
+                                      hairOffsetY: found.hairOffsetY,
+                                      hairOffsetZ: found.hairOffsetZ,
+                                      hairRotX: found.hairRotX,
+                                      hairRotY: found.hairRotY,
+                                      hairRotZ: found.hairRotZ,
+                                      hairConfig: clonedCfg,
+                                    }),
+                                    true
+                                  );
+                                }
+                                return;
+                              }
+                              const styleId = val as CharacterHairStyle;
+                              const nextCfg = createHairPresetConfig(styleId);
+                              setHairEditSide(nextCfg.mirrorSides ? 'both' : 'left');
+                              updateDoc(
+                                (d) => ({
+                                  ...d,
+                                  hairStyle: styleId,
+                                  customHairPresetId: undefined,
+                                  hairConfig: nextCfg,
+                                }),
+                                true
+                              );
+                            }}
+                            className="flex-1 min-w-0 px-2.5 py-2 rounded-xl text-xs font-bold bg-white dark:bg-[#141722] border border-slate-200/80 dark:border-white/[0.1] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7C5CFF]/40"
                           >
-                            {tab.label}
-                          </button>
-                        ))}
-                      </div>
+                            <option value="none">None (No Hair)</option>
+                            {customHairPresets.length > 0 && (
+                              <optgroup label="Custom Saved Presets">
+                                {customHairPresets.map((cp) => (
+                                  <option key={cp.id} value={`custom:${cp.id}`}>
+                                    ★ {cp.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            <optgroup label="Male / Short &amp; Layered">
+                              {maleHair.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Female / Long &amp; Curls">
+                              {femaleHair.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Creature &amp; Stylized">
+                              {creatureHair.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          </select>
 
-                      <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto maker-scroll pr-0.5">
-                        {filteredHair.map((opt) => (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => updateDoc((d) => ({ ...d, hairStyle: opt.id }), true)}
-                            className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border text-left truncate ${
-                              doc.hairStyle === opt.id
-                                ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
-                                : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.07]'
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
+                          {matchedCustomHair && (
+                            <>
+                              <button
+                                type="button"
+                                title="Update saved custom preset"
+                                onClick={() => {
+                                  saveCustomHairPreset({
+                                    id: matchedCustomHair.id,
+                                    name: matchedCustomHair.name,
+                                    baseStyle:
+                                      doc.hairStyle === 'none' ? 'shortCrop' : doc.hairStyle,
+                                    hairColor: doc.hairColor,
+                                    hairAccentColor: ext.hairAccentColor,
+                                    hairScale: ext.hairScale,
+                                    hairOffsetX: ext.hairOffsetX,
+                                    hairOffsetY: ext.hairOffsetY,
+                                    hairOffsetZ: ext.hairOffsetZ,
+                                    hairRotX: ext.hairRotX,
+                                    hairRotY: ext.hairRotY,
+                                    hairRotZ: ext.hairRotZ,
+                                    hairConfig: hairCfg,
+                                  });
+                                }}
+                                className="px-2 py-2 rounded-xl text-[10px] font-extrabold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30"
+                              >
+                                <Save size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete custom preset"
+                                onClick={() => {
+                                  deleteCustomHairPreset(matchedCustomHair.id);
+                                  updateDoc(
+                                    (d) => ({ ...d, customHairPresetId: undefined }),
+                                    true
+                                  );
+                                }}
+                                className="px-2 py-2 rounded-xl text-[10px] font-extrabold bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-300 border border-rose-500/30"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        {saveHairOpen && doc.hairStyle !== 'none' && (
+                          <div className="flex items-center gap-1.5 p-2 rounded-xl bg-white/90 dark:bg-[#141722] border border-[#7C5CFF]/30">
+                            <input
+                              type="text"
+                              value={customHairName}
+                              onChange={(e) => setCustomHairName(e.target.value)}
+                              placeholder="Custom hair preset name..."
+                              className="flex-1 min-w-0 px-2 py-1 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-[#1B1F2E] border border-slate-200/70 dark:border-white/[0.08] focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const saved = saveCustomHairPreset({
+                                  name: customHairName.trim() || 'Custom Hair',
+                                  baseStyle: doc.hairStyle === 'none' ? 'shortCrop' : doc.hairStyle,
+                                  hairColor: doc.hairColor,
+                                  hairAccentColor: ext.hairAccentColor,
+                                  hairScale: ext.hairScale,
+                                  hairOffsetX: ext.hairOffsetX,
+                                  hairOffsetY: ext.hairOffsetY,
+                                  hairOffsetZ: ext.hairOffsetZ,
+                                  hairRotX: ext.hairRotX,
+                                  hairRotY: ext.hairRotY,
+                                  hairRotZ: ext.hairRotZ,
+                                  hairConfig: hairCfg,
+                                });
+                                updateDoc((d) => ({ ...d, customHairPresetId: saved.id }), true);
+                                setSaveHairOpen(false);
+                              }}
+                              className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-[#7C5CFF] text-white"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSaveHairOpen(false)}
+                              className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {doc.hairStyle !== 'none' && (
-                        <div className="space-y-2.5 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                              Placement, Rotation &amp; Scale
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateDoc(
-                                  (d) => ({
-                                    ...d,
-                                    hairOffsetX: 0,
-                                    hairOffsetY: 0,
-                                    hairOffsetZ: 0,
-                                    hairRotX: 0,
-                                    hairRotY: 0,
-                                    hairRotZ: 0,
-                                    hairScale: 1,
-                                  }),
+                        <>
+                          {/* Base Layout & Parting */}
+                          <div className="space-y-2 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                              Base Structure &amp; Part Line
+                            </div>
+                            <div className="grid grid-cols-3 gap-1">
+                              {(
+                                [
+                                  { id: 'partedSides', label: 'Parted Locks' },
+                                  { id: 'afroSides', label: 'Dual Afro' },
+                                  { id: 'spikySides', label: 'Spiky Sides' },
+                                  { id: 'crest', label: 'Center Crest' },
+                                  { id: 'mane', label: 'Full Mane' },
+                                ] as { id: CharacterHairLayoutMode; label: string }[]
+                              ).map((modeOpt) => (
+                                <button
+                                  key={modeOpt.id}
+                                  type="button"
+                                  onClick={() => patchHairConfig({ layout: modeOpt.id }, true)}
+                                  className={`py-1 px-1.5 rounded-lg text-[10px] font-bold border truncate ${
+                                    hairCfg.layout === modeOpt.id
+                                      ? 'bg-[#7C5CFF] text-white border-[#7C5CFF]'
+                                      : 'bg-white dark:bg-[#141722] border-slate-200/70 dark:border-white/[0.07]'
+                                  }`}
+                                >
+                                  {modeOpt.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {isSideBasedLayout && (
+                              <>
+                                {renderSliderRow(
+                                  'Center Part Gap',
+                                  hairCfg.partGap,
+                                  -0.015,
+                                  0.055,
+                                  0.002,
+                                  (val) => patchHairConfig({ partGap: val }),
+                                  'm'
+                                )}
+                                {renderSliderRow(
+                                  'Part Position (L ↔ R)',
+                                  hairCfg.partShift,
+                                  -0.075,
+                                  0.075,
+                                  0.003,
+                                  (val) => patchHairConfig({ partShift: val }),
+                                  'm'
+                                )}
+                              </>
+                            )}
+                          </div>
+
+                          {/* Left / Right Side Sculpt Controls */}
+                          {isSideBasedLayout && (
+                            <div className="space-y-2 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                                  Side Sculpting
+                                </span>
+                                <label className="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={hairCfg.mirrorSides}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      if (checked) setHairEditSide('both');
+                                      else if (hairEditSide === 'both') setHairEditSide('left');
+                                      patchHairConfig({ mirrorSides: checked }, true);
+                                    }}
+                                    className="accent-[#7C5CFF] rounded"
+                                  />
+                                  <span>Mirror Sides</span>
+                                </label>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/80 dark:bg-[#141722]">
+                                {(
+                                  [
+                                    { id: 'both', label: 'Both Sides' },
+                                    { id: 'left', label: 'Left Side' },
+                                    { id: 'right', label: 'Right Side' },
+                                  ] as const
+                                ).map((sideOpt) => (
+                                  <button
+                                    key={sideOpt.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setHairEditSide(sideOpt.id);
+                                      if (sideOpt.id === 'both' && !hairCfg.mirrorSides) {
+                                        patchHairConfig({ mirrorSides: true }, true);
+                                      }
+                                    }}
+                                    className={`py-1 rounded-lg text-[10px] font-extrabold transition-colors ${
+                                      hairEditSide === sideOpt.id
+                                        ? 'bg-[#7C5CFF] text-white'
+                                        : 'text-slate-500 dark:text-[#8D95AA] hover:text-slate-900 dark:hover:text-white'
+                                    }`}
+                                  >
+                                    {sideOpt.label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-bold text-slate-600 dark:text-[#A4ACC0]">
+                                  {hairEditSide === 'both'
+                                    ? 'Both Sides Active'
+                                    : hairEditSide === 'left'
+                                      ? 'Left Side Active'
+                                      : 'Right Side Active'}
+                                </span>
+                                <label className="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={activeSideCfg.enabled}
+                                    onChange={(e) =>
+                                      patchHairSide({ enabled: e.target.checked }, true)
+                                    }
+                                    className="accent-[#7C5CFF] rounded"
+                                  />
+                                  <span>Visible</span>
+                                </label>
+                              </div>
+
+                              {activeSideCfg.enabled && (
+                                <div className="space-y-2">
+                                  {renderSliderRow(
+                                    'Length (Short ↔ Long)',
+                                    activeSideCfg.length,
+                                    0.2,
+                                    2.2,
+                                    0.04,
+                                    (val) => patchHairSide({ length: val }),
+                                    '×'
+                                  )}
+                                  {renderSliderRow(
+                                    'Fullness (Thin ↔ Thick)',
+                                    activeSideCfg.fullness,
+                                    0.4,
+                                    1.9,
+                                    0.04,
+                                    (val) => patchHairSide({ fullness: val }),
+                                    '×'
+                                  )}
+                                  {renderSliderRow(
+                                    'Flatness ↔ Crown Lift',
+                                    activeSideCfg.flatness,
+                                    0.35,
+                                    1.8,
+                                    0.04,
+                                    (val) => patchHairSide({ flatness: val }),
+                                    '×'
+                                  )}
+                                  {renderSliderRow(
+                                    'Distance from Skin',
+                                    activeSideCfg.skinHug,
+                                    -0.025,
+                                    0.07,
+                                    0.003,
+                                    (val) => patchHairSide({ skinHug: val }),
+                                    'm'
+                                  )}
+                                  {renderSliderRow(
+                                    'Puffiness (Individual Puffs)',
+                                    activeSideCfg.puffiness,
+                                    0,
+                                    1,
+                                    0.04,
+                                    (val) => patchHairSide({ puffiness: val })
+                                  )}
+                                  {activeSideCfg.puffiness > 0.05 &&
+                                    renderSliderRow(
+                                      'Individual Puff Size',
+                                      activeSideCfg.puffScale,
+                                      0.4,
+                                      1.8,
+                                      0.04,
+                                      (val) => patchHairSide({ puffScale: val }),
+                                      '×'
+                                    )}
+                                  {renderSliderRow(
+                                    'Spikiness',
+                                    activeSideCfg.spikiness,
+                                    0,
+                                    1,
+                                    0.04,
+                                    (val) => patchHairSide({ spikiness: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Front Bangs Drop',
+                                    activeSideCfg.bangsDrop,
+                                    0,
+                                    1,
+                                    0.04,
+                                    (val) => patchHairSide({ bangsDrop: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Tip Flare (In ↔ Out)',
+                                    activeSideCfg.flare,
+                                    -1,
+                                    1,
+                                    0.05,
+                                    (val) => patchHairSide({ flare: val })
+                                  )}
+                                  {renderSliderRow(
+                                    'Side Scale',
+                                    activeSideCfg.scale,
+                                    0.5,
+                                    1.8,
+                                    0.03,
+                                    (val) => patchHairSide({ scale: val }),
+                                    '×'
+                                  )}
+                                  {renderSliderRow(
+                                    'Side Offset X',
+                                    activeSideCfg.offsetX,
+                                    -0.1,
+                                    0.1,
+                                    0.004,
+                                    (val) => patchHairSide({ offsetX: val }),
+                                    'm'
+                                  )}
+                                  {renderSliderRow(
+                                    'Side Offset Y',
+                                    activeSideCfg.offsetY,
+                                    -0.1,
+                                    0.1,
+                                    0.004,
+                                    (val) => patchHairSide({ offsetY: val }),
+                                    'm'
+                                  )}
+                                  {renderSliderRow(
+                                    'Side Offset Z',
+                                    activeSideCfg.offsetZ,
+                                    -0.1,
+                                    0.1,
+                                    0.004,
+                                    (val) => patchHairSide({ offsetZ: val }),
+                                    'm'
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Hair Details & Attachments */}
+                          <div className="space-y-2 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                              Curls &amp; Detail Attachments
+                            </div>
+                            <select
+                              aria-label="Hair detail attachment"
+                              value={hairCfg.detailStyle}
+                              onChange={(e) =>
+                                patchHairConfig(
+                                  { detailStyle: e.target.value as CharacterHairDetailStyle },
                                   true
                                 )
                               }
-                              className="text-[10px] font-extrabold text-[#7C5CFF] hover:underline"
+                              className="w-full px-2.5 py-1.5 rounded-xl text-xs font-bold bg-white dark:bg-[#141722] border border-slate-200/80 dark:border-white/[0.1] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7C5CFF]/40"
                             >
-                              Reset Pose
-                            </button>
+                              <option value="none">None (Clean Ends)</option>
+                              <option value="endCurls">Long End Curls (Ringlets)</option>
+                              <option value="bobFlip">Flipped Up Bob Curls</option>
+                              <option value="pigtails">Twin Pigtails</option>
+                              <option value="twinBuns">Twin Space Buns</option>
+                              <option value="ponytail">Back Ponytail</option>
+                              <option value="highBun">Top High Bun</option>
+                              <option value="braidPlait">Braided Crown Plait</option>
+                              <option value="pompCrest">Front Pompadour Sweep</option>
+                            </select>
+
+                            {hairCfg.detailStyle !== 'none' && (
+                              <div className="space-y-2">
+                                {renderSliderRow(
+                                  'Detail Scale',
+                                  hairCfg.detailScale,
+                                  0.4,
+                                  1.8,
+                                  0.04,
+                                  (val) => patchHairConfig({ detailScale: val }),
+                                  '×'
+                                )}
+                                {renderSliderRow(
+                                  'Curl Bounce / Twist',
+                                  hairCfg.detailCurl,
+                                  0,
+                                  1.5,
+                                  0.05,
+                                  (val) => patchHairConfig({ detailCurl: val })
+                                )}
+                                {renderSliderRow(
+                                  'Detail Height Offset (Y)',
+                                  hairCfg.detailOffsetY,
+                                  -0.08,
+                                  0.08,
+                                  0.004,
+                                  (val) => patchHairConfig({ detailOffsetY: val }),
+                                  'm'
+                                )}
+                              </div>
+                            )}
                           </div>
-                          {renderSliderRow(
-                            'Hair Scale',
-                            ext.hairScale,
-                            0.55,
-                            1.75,
-                            0.02,
-                            (val) => updateDoc((d) => ({ ...d, hairScale: val })),
-                            '×'
-                          )}
-                          {renderSliderRow(
-                            'Offset Left / Right (X)',
-                            ext.hairOffsetX,
-                            -0.16,
-                            0.16,
-                            0.004,
-                            (val) => updateDoc((d) => ({ ...d, hairOffsetX: val })),
-                            'm'
-                          )}
-                          {renderSliderRow(
-                            'Offset Up / Down (Y)',
-                            ext.hairOffsetY,
-                            -0.16,
-                            0.16,
-                            0.004,
-                            (val) => updateDoc((d) => ({ ...d, hairOffsetY: val })),
-                            'm'
-                          )}
-                          {renderSliderRow(
-                            'Offset Front / Back (Z)',
-                            ext.hairOffsetZ,
-                            -0.16,
-                            0.16,
-                            0.004,
-                            (val) => updateDoc((d) => ({ ...d, hairOffsetZ: val })),
-                            'm'
-                          )}
-                          {renderSliderRow(
-                            'Tilt Forward / Back (Pitch)',
-                            ext.hairRotX,
-                            -45,
-                            45,
-                            1,
-                            (val) => updateDoc((d) => ({ ...d, hairRotX: val })),
-                            '°'
-                          )}
-                          {renderSliderRow(
-                            'Turn Left / Right (Yaw)',
-                            ext.hairRotY,
-                            -45,
-                            45,
-                            1,
-                            (val) => updateDoc((d) => ({ ...d, hairRotY: val })),
-                            '°'
-                          )}
-                          {renderSliderRow(
-                            'Roll Sideways',
-                            ext.hairRotZ,
-                            -45,
-                            45,
-                            1,
-                            (val) => updateDoc((d) => ({ ...d, hairRotZ: val })),
-                            '°'
-                          )}
-                          {renderColorRow('Hair Color', doc.hairColor, (hex) =>
-                            updateDoc((d) => ({ ...d, hairColor: hex }))
-                          )}
-                          {renderColorRow('Hair Band / Accent', ext.hairAccentColor, (hex) =>
-                            updateDoc((d) => ({ ...d, hairAccentColor: hex }))
-                          )}
-                        </div>
+
+                          {/* Global Placement, Rotation & Colors */}
+                          <div className="space-y-2.5 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                                Whole Hair Placement &amp; Colors
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateDoc(
+                                    (d) => ({
+                                      ...d,
+                                      hairOffsetX: 0,
+                                      hairOffsetY: 0,
+                                      hairOffsetZ: 0,
+                                      hairRotX: 0,
+                                      hairRotY: 0,
+                                      hairRotZ: 0,
+                                      hairScale: 1,
+                                    }),
+                                    true
+                                  )
+                                }
+                                className="text-[10px] font-extrabold text-[#7C5CFF] hover:underline"
+                              >
+                                Reset Pose
+                              </button>
+                            </div>
+                            {renderSliderRow(
+                              'Hair Scale',
+                              ext.hairScale,
+                              0.55,
+                              1.75,
+                              0.02,
+                              (val) => updateDoc((d) => ({ ...d, hairScale: val })),
+                              '×'
+                            )}
+                            {renderSliderRow(
+                              'Offset Left / Right (X)',
+                              ext.hairOffsetX,
+                              -0.16,
+                              0.16,
+                              0.004,
+                              (val) => updateDoc((d) => ({ ...d, hairOffsetX: val })),
+                              'm'
+                            )}
+                            {renderSliderRow(
+                              'Offset Up / Down (Y)',
+                              ext.hairOffsetY,
+                              -0.16,
+                              0.16,
+                              0.004,
+                              (val) => updateDoc((d) => ({ ...d, hairOffsetY: val })),
+                              'm'
+                            )}
+                            {renderSliderRow(
+                              'Offset Front / Back (Z)',
+                              ext.hairOffsetZ,
+                              -0.16,
+                              0.16,
+                              0.004,
+                              (val) => updateDoc((d) => ({ ...d, hairOffsetZ: val })),
+                              'm'
+                            )}
+                            {renderSliderRow(
+                              'Tilt Forward / Back (Pitch)',
+                              ext.hairRotX,
+                              -45,
+                              45,
+                              1,
+                              (val) => updateDoc((d) => ({ ...d, hairRotX: val })),
+                              '°'
+                            )}
+                            {renderSliderRow(
+                              'Turn Left / Right (Yaw)',
+                              ext.hairRotY,
+                              -45,
+                              45,
+                              1,
+                              (val) => updateDoc((d) => ({ ...d, hairRotY: val })),
+                              '°'
+                            )}
+                            {renderSliderRow(
+                              'Roll Sideways',
+                              ext.hairRotZ,
+                              -45,
+                              45,
+                              1,
+                              (val) => updateDoc((d) => ({ ...d, hairRotZ: val })),
+                              '°'
+                            )}
+                            {renderColorRow('Hair Color', doc.hairColor, (hex) =>
+                              updateDoc((d) => ({ ...d, hairColor: hex }))
+                            )}
+                            {renderColorRow('Hair Band / Accent', ext.hairAccentColor, (hex) =>
+                              updateDoc((d) => ({ ...d, hairAccentColor: hex }))
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
 
