@@ -4117,6 +4117,7 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                   eyeAspectY: s.aspectY,
                   eyeSpacing: s.spacing,
                   eyeHeight: s.height,
+                  eyeDepthOffset: s.depthOffset,
                   pupilStyle: s.pupilStyle,
                   pupilSize: s.pupilSize,
                   irisColor: s.irisColor,
@@ -4470,6 +4471,15 @@ export const CharacterMakerModal: React.FC<CharacterMakerModalProps> = ({
                       0.11,
                       0.004,
                       (val) => patchEyeSide({ height: val })
+                    )}
+                    {renderSliderRow(
+                      'Eye Depth (Set In ↔ Out)',
+                      activeEyeSide.depthOffset,
+                      -0.1,
+                      0.06,
+                      0.001,
+                      (val) => patchEyeSide({ depthOffset: val }),
+                      'm'
                     )}
 
                     <div className="grid grid-cols-3 gap-1">

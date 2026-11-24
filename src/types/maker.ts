@@ -2857,6 +2857,7 @@ export interface CharacterMakerDoc {
   eyeAspectY: number;
   eyeSpacing: number;
   eyeHeight: number;
+  eyeDepthOffset?: number;
   pupilStyle: CharacterEyePupilStyle;
   pupilSize: number;
   scleraColor: string;
@@ -2911,6 +2912,7 @@ export interface CharacterEyeSideConfig {
   aspectY: number;
   spacing: number;
   height: number;
+  depthOffset: number;
   pupilStyle: CharacterEyePupilStyle;
   pupilSize: number;
   irisColor: string;

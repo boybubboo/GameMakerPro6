@@ -1000,6 +1000,7 @@ export function resolveCharacterExtras(doc: CharacterMakerDoc): ResolvedCharacte
         aspectY: doc.eyeAspectY,
         spacing: doc.eyeSpacing,
         height: doc.eyeHeight,
+        depthOffset: doc.eyeDepthOffset ?? 0,
         pupilStyle: doc.pupilStyle,
         pupilSize: doc.pupilSize,
         irisColor: doc.irisColor,
@@ -2443,6 +2444,86 @@ function createArchBrowGroup(
     new THREE.Vector3(halfW, 0, -halfW * 0.14),
   ];
   return createRoundedCurveMesh(pts, thickness, mat, 14);
+}
+
+/**
+ * Builds a disc/ellipse mesh projected directly onto the front (+Z) dome of a concentric
+ * sphere of radius `shellRadius` so eye layers (iris, pupil, catchlights) always hug the
+ * sclera surface cleanly at any pupil size or eye flatness.
+ */
+function createConformingSphereDiscGeometry(
+  rx: number,
+  ry: number,
+  shellRadius: number,
+  radialSegs = 28,
+  ringSegs = 8,
+  offsetX = 0,
+  offsetY = 0
+): THREE.BufferGeometry {
+  const maxR = shellRadius * 0.965;
+  const clampToDisc = (px: number, py: number): [number, number] => {
+    const dist = Math.hypot(px, py);
+    if (dist > maxR && dist > 1e-6) {
+      const s = maxR / dist;
+      return [px * s, py * s];
+    }
+    return [px, py];
+  };
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const pushVertex = (rawX: number, rawY: number, u: number, v: number) => {
+    const [x, y] = clampToDisc(rawX, rawY);
+    const z = Math.sqrt(Math.max(0.0004, shellRadius * shellRadius - x * x - y * y));
+    positions.push(x, y, z);
+    const invLen = 1 / Math.max(1e-6, Math.hypot(x, y, z));
+    normals.push(x * invLen, y * invLen, z * invLen);
+    uvs.push(u, v);
+  };
+
+  pushVertex(offsetX, offsetY, 0.5, 0.5);
+
+  const ringStride = radialSegs + 1;
+  for (let ring = 1; ring <= ringSegs; ring++) {
+    const t = ring / ringSegs;
+    for (let seg = 0; seg <= radialSegs; seg++) {
+      const theta = (seg / radialSegs) * Math.PI * 2;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      pushVertex(
+        offsetX + rx * t * cosT,
+        offsetY + ry * t * sinT,
+        0.5 + 0.5 * t * cosT,
+        0.5 + 0.5 * t * sinT
+      );
+    }
+  }
+
+  for (let seg = 0; seg < radialSegs; seg++) {
+    indices.push(0, 1 + seg, 1 + seg + 1);
+  }
+
+  for (let ring = 1; ring < ringSegs; ring++) {
+    const rowA = 1 + (ring - 1) * ringStride;
+    const rowB = 1 + ring * ringStride;
+    for (let seg = 0; seg < radialSegs; seg++) {
+      const a = rowA + seg;
+      const b = rowB + seg;
+      const c = rowB + seg + 1;
+      const d = rowA + seg + 1;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
 }
 
 /** Builds a sculpted 3D bird/duck/owl/eagle/stork/pelican beak aligned along +Z */
@@ -6789,7 +6870,12 @@ export function buildCharacterRigAndMesh(
     eyeSlots.push({ side: 'right', xMult: -0.72, ySizeOffset: -0.95, scale: 0.6 });
   }
 
-  const catchlightMat = new THREE.MeshBasicMaterial({ color: '#FFFFFF' });
+  const catchlightMat = new THREE.MeshBasicMaterial({
+    color: '#FFFFFF',
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -6,
+  });
   const createEyeMaterials = (cfg: CharacterEyeSideConfig) => ({
     scleraMat: new THREE.MeshStandardMaterial({
       color: cfg.scleraColor,
@@ -6802,6 +6888,9 @@ export function buildCharacterRigAndMesh(
       metalness: 0.05,
       emissive: cfg.pupilStyle === 'glow' ? new THREE.Color(cfg.irisColor) : new THREE.Color('#000000'),
       emissiveIntensity: cfg.pupilStyle === 'glow' ? 0.55 : 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -2,
     }),
     pupilMat: new THREE.MeshStandardMaterial({
       color: doc.pupilColor,
@@ -6809,12 +6898,27 @@ export function buildCharacterRigAndMesh(
       metalness: 0.02,
       emissive: cfg.pupilStyle === 'glow' ? new THREE.Color(doc.pupilColor) : new THREE.Color('#000000'),
       emissiveIntensity: cfg.pupilStyle === 'glow' ? 0.9 : 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -4,
     }),
-    eyelidMat: new THREE.MeshStandardMaterial({
+    botLidMat: new THREE.MeshStandardMaterial({
       color: cfg.eyelidColor,
       roughness: doc.materialFinish === 'glossySlime' ? 0.18 : 0.62,
       metalness: 0.02,
       side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -8,
+    }),
+    topLidMat: new THREE.MeshStandardMaterial({
+      color: cfg.eyelidColor,
+      roughness: doc.materialFinish === 'glossySlime' ? 0.18 : 0.62,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -5,
+      polygonOffsetUnits: -10,
     }),
   });
   const leftEyeMats = createEyeMaterials(ext.eyeSideConfig.left);
@@ -6851,46 +6955,72 @@ export function buildCharacterRigAndMesh(
     scaledEyeFrame.scale.set(r * sideCfg.aspectX, r * sideCfg.aspectY, r * sideCfg.flatness);
     eyeSocket.add(scaledEyeFrame);
 
-    const eyeball = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), mats.scleraMat);
+    // Concentric sphere stack (1.000 < 1.020 < 1.036 < 1.050 < 1.068 < 1.088)
+    // Uniform scaling preserves strict containment for any eye size, aspect, or flatness.
+    const eyeball = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), mats.scleraMat);
     eyeball.name = `CharEyeSclera_${idx}`;
     eyeball.castShadow = true;
     scaledEyeFrame.add(eyeball);
 
-    const irisRadius = THREE.MathUtils.clamp(sideCfg.pupilSize * 1.28, 0.28, 0.92);
+    const irisRadius = THREE.MathUtils.clamp(sideCfg.pupilSize * 1.28, 0.24, 0.88);
     const iris = new THREE.Mesh(
-      new THREE.SphereGeometry(irisRadius, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.42),
+      createConformingSphereDiscGeometry(irisRadius, irisRadius, 1.02, 32, 10),
       mats.irisMat
     );
-    iris.rotation.x = Math.PI * 0.5;
-    iris.position.z = 0.72;
-    iris.scale.set(1, 0.42, 1);
     scaledEyeFrame.add(iris);
 
     const pScale = THREE.MathUtils.clamp(sideCfg.pupilSize * 0.78, 0.18, 0.75);
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(pScale, 16, 12), mats.pupilMat);
-    pupil.position.z = 0.88;
-    if (sideCfg.pupilStyle === 'catSlit') {
-      pupil.scale.set(0.32, 1.15, 0.35);
-    } else if (sideCfg.pupilStyle === 'oval') {
-      pupil.scale.set(0.75, 1.15, 0.35);
-    } else {
-      pupil.scale.set(1, 1, 0.35);
-    }
+    const pupilRx =
+      sideCfg.pupilStyle === 'catSlit'
+        ? pScale * 0.32
+        : sideCfg.pupilStyle === 'oval'
+          ? pScale * 0.75
+          : pScale;
+    const pupilRy =
+      sideCfg.pupilStyle === 'catSlit' || sideCfg.pupilStyle === 'oval'
+        ? Math.min(irisRadius * 0.92, pScale * 1.15)
+        : pScale;
+    const pupil = new THREE.Mesh(
+      createConformingSphereDiscGeometry(pupilRx, pupilRy, 1.036, 32, 8),
+      mats.pupilMat
+    );
     scaledEyeFrame.add(pupil);
 
-    const specMain = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), catchlightMat);
-    specMain.position.set(0.28, 0.34, 0.98);
-    specMain.scale.set(1, 1, 0.35);
+    const specMainRadius = THREE.MathUtils.clamp(irisRadius * 0.22, 0.075, 0.155);
+    const specMainDist = THREE.MathUtils.clamp(irisRadius * 0.62, 0.16, 0.44);
+    const specMain = new THREE.Mesh(
+      createConformingSphereDiscGeometry(
+        specMainRadius,
+        specMainRadius,
+        1.05,
+        18,
+        4,
+        specMainDist * 0.635,
+        specMainDist * 0.772
+      ),
+      catchlightMat
+    );
     scaledEyeFrame.add(specMain);
     if (sideCfg.pupilStyle === 'starry') {
-      const specSub = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), catchlightMat);
-      specSub.position.set(-0.24, -0.26, 0.99);
-      specSub.scale.set(1, 1, 0.35);
+      const specSubRadius = THREE.MathUtils.clamp(irisRadius * 0.13, 0.045, 0.09);
+      const specSubDist = THREE.MathUtils.clamp(irisRadius * 0.56, 0.14, 0.35);
+      const specSub = new THREE.Mesh(
+        createConformingSphereDiscGeometry(
+          specSubRadius,
+          specSubRadius,
+          1.05,
+          14,
+          3,
+          -specSubDist * 0.678,
+          -specSubDist * 0.735
+        ),
+        catchlightMat
+      );
       scaledEyeFrame.add(specSub);
     }
 
     if (sideCfg.eyelidEnabled) {
-      const topMinOpen = -Math.PI * 0.52;
+      const topMinOpen = -Math.PI * 0.44;
       const topMaxClose = Math.PI * 0.5;
       const restFrac = THREE.MathUtils.clamp(sideCfg.eyelidRestHeight, 0, 1);
 
@@ -6905,8 +7035,8 @@ export function buildCharacterRigAndMesh(
         autoBlink: doc.autoBlink,
       };
       const topLidShell = new THREE.Mesh(
-        new THREE.SphereGeometry(1.07, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
-        mats.eyelidMat
+        new THREE.SphereGeometry(1.088, 32, 20, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        mats.topLidMat
       );
       topLidShell.castShadow = true;
       topLidPivot.add(topLidShell);
@@ -6920,8 +7050,8 @@ export function buildCharacterRigAndMesh(
       });
 
       if (sideCfg.eyelidLowerEnabled) {
-        const botMinOpen = Math.PI * 0.52;
-        const botMaxClose = -Math.PI * 0.04;
+        const botMinOpen = Math.PI * 0.46;
+        const botMaxClose = -Math.PI * 0.02;
         const botRestFrac = restFrac * 0.35;
         const botLidPivot = new THREE.Group();
         botLidPivot.name = `CharEye_${idx}_EyelidBottom`;
@@ -6934,8 +7064,8 @@ export function buildCharacterRigAndMesh(
           autoBlink: doc.autoBlink,
         };
         const botLidShell = new THREE.Mesh(
-          new THREE.SphereGeometry(1.055, 20, 10, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48),
-          mats.eyelidMat
+          new THREE.SphereGeometry(1.068, 32, 20, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5),
+          mats.botLidMat
         );
         botLidPivot.add(botLidShell);
         scaledEyeFrame.add(botLidPivot);
@@ -6957,7 +7087,7 @@ export function buildCharacterRigAndMesh(
     const skullTarget = new THREE.Vector3(epX, epY, baseHeadDepthZ);
     const rayDir = skullTarget.clone().sub(skullOrigin).normalize();
     const fallbackOrigin = new THREE.Vector3(epX, epY, baseHeadDepthZ + 0.035);
-    const bias = r * sideCfg.flatness * (1 - eyeDepthEmbedFrac * 1.35);
+    const bias = r * sideCfg.flatness * (1 - eyeDepthEmbedFrac * 1.35) + sideCfg.depthOffset;
     attachFromSkullInterior(skullOrigin, rayDir, fallbackOrigin, eyeSocket, bias, 0.45);
   });
 
